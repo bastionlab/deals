@@ -51,8 +51,12 @@ def build_url(spec: dict, page: int = 1) -> str:
     lo, hi = spec.get("min_price"), spec.get("max_price")
     if lo is not None or hi is not None:
         parts.append(f"preis:{lo if lo is not None else ''}:{hi if hi is not None else ''}")
-    if spec.get("shipping") == "only":
+    # "only" is the legacy spelling of "ship"; both filter server-side
+    shipping = spec.get("shipping", "any")
+    if shipping in ("only", "ship"):
         parts.append("versand:ja")
+    elif shipping == "pickup":
+        parts.append("versand:nein")
     kw = spec.get("keyword") or ""
     if kw:
         parts.append(slug(kw))

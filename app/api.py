@@ -78,11 +78,16 @@ def searches() -> list[dict]:
 
 
 @app.get("/feed", dependencies=[Depends(guard)])
-def feed(limit: int = 60, search: int | None = None, verdict: str | None = None) -> list[dict]:
+def feed(limit: int = 60, search: int | None = None, verdict: str | None = None,
+         shipping: str | None = None) -> list[dict]:
     where, params = ["1=1"], []
     if search:
         where.append("m.search_id = ?")
         params.append(search)
+    if shipping == "ship":
+        where.append("l.shipping = 1")
+    elif shipping == "pickup":
+        where.append("l.shipping = 0")
     if verdict == "unrated":
         where.append("m.verdict IS NULL")
     elif verdict:
@@ -110,27 +115,49 @@ class NewSearch(BaseModel):
     max_price: int | None = None
     radius_km: int = 10
     location_id: str = "l3331"
-    shipping: str = "any"
+    shipping: str = "any"          # any | ship | pickup ("only" = legacy ship)
 
 
-@app.post("/searches", dependencies=[Depends(guard)])
-def add_search(body: NewSearch) -> dict:
-    spec = {
-        "keyword": body.keyword,
-        "terms": [t for t in body.terms if t.strip()] or [body.keyword],
+SHIPPING = {"any", "ship", "pickup"}
+
+
+def _spec(body: NewSearch) -> dict:
+    shipping = "ship" if body.shipping == "only" else body.shipping
+    return {
+        "keyword": body.keyword.strip(),
+        "terms": [t for t in body.terms if t.strip()] or [body.keyword.strip()],
         "exclude": [t for t in body.exclude if t.strip()],
         "min_price": body.min_price,
         "max_price": body.max_price,
         "radius_km": max(0, min(body.radius_km, 200)),
         "location_id": body.location_id if body.location_id.startswith("l") else "l3331",
-        "shipping": "only" if body.shipping == "only" else "any",
+        "shipping": shipping if shipping in SHIPPING else "any",
         "offers_only": True,
     }
+
+
+@app.post("/searches", dependencies=[Depends(guard)])
+def add_search(body: NewSearch) -> dict:
+    spec = _spec(body)
     try:
-        sid = db.add_search(body.name.strip(), body.keyword.strip(), spec)
+        sid = db.add_search(body.name.strip(), spec["keyword"], spec)
     except Exception as exc:
         raise HTTPException(400, f"could not add: {exc}") from exc
     return {"id": sid, "url": ka.build_url(spec)}
+
+
+@app.post("/searches/{sid}/edit", dependencies=[Depends(guard)])
+def edit_search(sid: int, body: NewSearch) -> dict:
+    """Edit and re-apply. max_seen_id is deliberately left alone: widening a
+    search must not make the next poll treat old ads as new and push them."""
+    spec = _spec(body)
+    try:
+        ok = db.update_search(sid, body.name.strip(), spec)
+    except Exception as exc:
+        raise HTTPException(400, f"could not save: {exc}") from exc
+    if not ok:
+        raise HTTPException(404, "no such search")
+    return {"id": sid, "url": ka.build_url(spec), **db.rematch(sid, spec)}
 
 
 @app.post("/searches/{sid}/{action}", dependencies=[Depends(guard)])

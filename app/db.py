@@ -80,6 +80,47 @@ def add_search(name: str, raw_query: str, spec: dict) -> int:
         return cur.lastrowid
 
 
+def update_search(search_id: int, name: str, spec: dict) -> bool:
+    with connect() as con:
+        n = con.execute(
+            "UPDATE searches SET name=?, raw_query=?, spec=? WHERE id=?",
+            (name, spec.get("keyword", ""), json.dumps(spec, ensure_ascii=False), search_id),
+        ).rowcount
+    return n > 0
+
+
+def rematch(search_id: int, spec: dict) -> dict:
+    """Re-apply a search's filters to everything already stored.
+
+    Editing a search should change the feed straight away instead of waiting for
+    each listing to be re-posted. Newly matching listings are inserted already
+    marked as notified: an edit must never fire a burst of Telegram pushes.
+    """
+    from .filters import check
+
+    added = removed = 0
+    with connect() as con:
+        listings = con.execute("SELECT * FROM listings").fetchall()
+        current = {(r["source"], r["source_id"]) for r in con.execute(
+            "SELECT source, source_id FROM matches WHERE search_id=?", (search_id,))}
+        now = time.time()
+        for li in listings:
+            key = (li["source"], li["source_id"])
+            keep, _ = check(dict(li), spec)
+            if keep and key not in current:
+                con.execute(
+                    """INSERT INTO matches (search_id, source, source_id, matched_at, notified_at)
+                       VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                    (search_id, *key, now, now))
+                added += 1
+            elif not keep and key in current:
+                con.execute(
+                    "DELETE FROM matches WHERE search_id=? AND source=? AND source_id=?",
+                    (search_id, *key))
+                removed += 1
+    return {"added": added, "removed": removed}
+
+
 def active_searches() -> list[sqlite3.Row]:
     with connect() as con:
         return con.execute(

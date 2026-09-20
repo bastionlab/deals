@@ -38,6 +38,15 @@ def check(listing: dict, spec: dict) -> tuple[bool, str | None]:
     radius = spec.get("radius_km")
     dist = listing.get("distance_km")
     shipping_ok = bool(listing.get("shipping"))
+
+    # Kleinanzeigen already applied versand:ja / versand:nein, but a search can
+    # be edited after its listings were stored, so re-check rather than trust it.
+    mode = spec.get("shipping", "any")
+    if mode in ("only", "ship") and not shipping_ok:
+        return False, "pickup-only-listing"
+    if mode == "pickup" and shipping_ok:
+        return False, "shipped-listing"
+
     if radius is not None and dist is not None and dist > float(radius) and not shipping_ok:
         return False, "too-far-and-no-shipping"
 

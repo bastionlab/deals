@@ -165,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--max-price", type=int)
     a.add_argument("--radius", type=int, default=10)
     a.add_argument("--location", default="l3331", help="l3331 = Berlin")
-    a.add_argument("--shipping", choices=["any", "only"], default="any")
+    a.add_argument("--shipping", choices=["any", "ship", "pickup"], default="any")
     a.set_defaults(func=cmd_add)
 
     sub.add_parser("ls").set_defaults(func=cmd_ls)
