@@ -86,6 +86,28 @@ def init() -> None:
             for col, ddl in cols.items():
                 if col not in have:
                     con.execute(ddl)
+        prune_orphans(con)
+
+
+def prune_orphans(con: sqlite3.Connection | None = None) -> int:
+    """Drop matches whose search is gone.
+
+    Deleting a search removes its matches, but a poll already in flight can
+    insert more straight afterwards, and matches has no foreign key. The feed
+    hides them behind its JOIN; the tab counts did not, which is how they
+    surfaced. Cheap enough to run on every start.
+    """
+    owned = con is None
+    con = con or connect()
+    try:
+        n = con.execute(
+            "DELETE FROM matches WHERE search_id NOT IN (SELECT id FROM searches)").rowcount
+        if owned:
+            con.commit()
+        return n
+    finally:
+        if owned:
+            con.close()
 
 
 def add_search(name: str, raw_query: str, spec: dict) -> int:

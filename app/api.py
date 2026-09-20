@@ -91,9 +91,13 @@ def searches() -> list[dict]:
     return out
 
 
-@app.get("/feed", dependencies=[Depends(guard)])
-def feed(limit: int = 60, search: int | None = None, verdict: str | None = None,
-         shipping: str | None = None, show: str = "passed") -> list[dict]:
+def _conditions(search: int | None, verdict: str | None, shipping: str | None,
+                show: str, hide_down: bool) -> tuple[list[str], list]:
+    """The one place the feed view is defined.
+
+    /feed and /counts must agree or the tab numbers lie about what the tab
+    contains, so both build their WHERE from here.
+    """
     where, params = ["1=1"], []
     if show == "passed":
         where.append("COALESCE(m.passed, 1) = 1")
@@ -108,11 +112,40 @@ def feed(limit: int = 60, search: int | None = None, verdict: str | None = None,
     elif shipping == "pickup":
         where.append(f"NOT {SHIPPED_SQL}")
         params.append(NEARBY_KM)
+    if hide_down:
+        where.append("COALESCE(m.verdict, '') != 'down'")
     if verdict == "unrated":
         where.append("m.verdict IS NULL")
     elif verdict:
         where.append("m.verdict = ?")
         params.append(verdict)
+    return where, params
+
+
+@app.get("/counts", dependencies=[Depends(guard)])
+def counts(verdict: str | None = None, shipping: str | None = None,
+           show: str = "passed", hide_down: bool = False) -> dict:
+    """How many rows each tab would actually show, under the current view."""
+    where, params = _conditions(None, verdict, shipping, show, hide_down)
+    with db.connect() as con:
+        rows = con.execute(f"""
+            SELECT m.search_id AS sid, COUNT(*) AS n
+            FROM matches m
+            JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
+            JOIN searches s ON s.id=m.search_id
+            WHERE {' AND '.join(where)}
+            GROUP BY m.search_id""", params).fetchall()
+        hidden = con.execute(
+            "SELECT COUNT(*) AS n FROM matches WHERE verdict='down'").fetchone()["n"]
+    per = {str(r["sid"]): r["n"] for r in rows}
+    return {"per_search": per, "total": sum(per.values()), "thumbed_down": hidden}
+
+
+@app.get("/feed", dependencies=[Depends(guard)])
+def feed(limit: int = 60, search: int | None = None, verdict: str | None = None,
+         shipping: str | None = None, show: str = "passed",
+         hide_down: bool = False) -> list[dict]:
+    where, params = _conditions(search, verdict, shipping, show, hide_down)
     params.append(min(limit, 200))
     with db.connect() as con:
         rows = con.execute(f"""
@@ -230,8 +263,9 @@ def search_action(sid: int, action: str) -> dict:
         raise HTTPException(400, "unknown action")
     with db.connect() as con:
         if action == "delete":
-            con.execute("DELETE FROM matches WHERE search_id=?", (sid,))
             n = con.execute("DELETE FROM searches WHERE id=?", (sid,)).rowcount
+            con.execute("DELETE FROM matches WHERE search_id=?", (sid,))
+            db.prune_orphans(con)
         else:
             n = con.execute("UPDATE searches SET enabled=? WHERE id=?",
                             (1 if action == "enable" else 0, sid)).rowcount
