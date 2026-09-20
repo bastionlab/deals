@@ -1,0 +1,22 @@
+[Unit]
+Description=deals poller (Kleinanzeigen -> Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/deals/deals.env
+WorkingDirectory=/opt/deals
+ExecStart=/opt/deals/venv/bin/python -m app.poller
+Restart=always
+RestartSec=10
+StateDirectory=deals
+# it only needs to read its own code and write one sqlite file
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/deals
+
+[Install]
+WantedBy=multi-user.target
