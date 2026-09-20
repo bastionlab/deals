@@ -75,6 +75,29 @@ A `pickup` search deliberately does *not* send `versand:nein`: that would drop
 nearby sellers who also offer posting, and those are exactly the ones worth
 collecting. It fetches the radius and applies the distance rule locally.
 
+## Composing a search (the ✦ box)
+
+`app/compose.py`. A single prompt writes filters that look right and match the
+wrong things — asked for "RTX 3060 oder 3090" it produced the terms
+rtx/geforce/nvidia, which happily match a 5070. The model cannot see that
+without seeing results.
+
+So the loop is: **draft → run the search for real → show the model its own hits
+next to the original wish → correct → re-run**, up to `MAX_ROUNDS`. Streams
+NDJSON, because it takes tens of seconds and watching it is most of the
+reassurance.
+
+Three things keep it honest:
+
+- **Best round wins, not the last.** The critic can tighten a working filter
+  into one that returns almost nothing (13 ads/2 hits → 3 ads/1 hit in testing).
+  `_best()` picks the round with the most relevant hits, ties going to the
+  tighter search, and the UI says when it reverted.
+- **`tidy_keyword()`** strips conjunctions and caps length. "rtx 3060 oder 3090"
+  as a search term returns zero ads, because the box matches literally.
+- **Zero results force a correction in code**, since the critic will otherwise
+  declare a filter broken and hand back the same one unchanged.
+
 ## The AI relevance filter
 
 Each search can carry an `intent`: one or two sentences saying what actually

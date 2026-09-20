@@ -16,18 +16,13 @@ import time
 import httpx
 
 from . import ai, db, filters, notify
-from .config import (EMPTY_PARSE_ALERT_AFTER, FETCH_JITTER, FETCH_MIN_INTERVAL,
-                     HTTP_TIMEOUT, USER_AGENT)
+from .config import (BROWSER_HEADERS, EMPTY_PARSE_ALERT_AFTER, FETCH_JITTER,
+                     FETCH_MIN_INTERVAL, HTTP_TIMEOUT)
 from .sources import kleinanzeigen as ka
 
 log = logging.getLogger("poller")
 
-HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
-    "Cache-Control": "no-cache",
-}
+HEADERS = BROWSER_HEADERS
 MAX_NOTIFY_PER_FLUSH = 8
 
 

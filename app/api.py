@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 
 import httpx
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import ai, db, filters
+from . import ai, compose, db, filters
 from .config import NEARBY_KM
 from .sources import kleinanzeigen as ka
 
@@ -25,6 +27,7 @@ ALLOWED = {ip for ip in os.environ.get(
     "DEALS_API_ALLOW", "192.168.1.54,192.168.1.50,127.0.0.1").split(",") if ip}
 
 app = FastAPI(title="deals", docs_url=None, redoc_url=None)
+log = logging.getLogger("api")
 
 
 async def guard(request: Request, authorization: str = Header(default="")) -> None:
@@ -158,6 +161,25 @@ def feed(limit: int = 60, search: int | None = None, verdict: str | None = None,
             ORDER BY COALESCE(l.posted_at, l.first_seen_at) DESC
             LIMIT ?""", params).fetchall()
     return [_row(r) for r in rows]
+
+
+class Wish(BaseModel):
+    prompt: str = Field(min_length=1, max_length=600)
+
+
+@app.post("/compose", dependencies=[Depends(guard)])
+async def compose_search(body: Wish) -> StreamingResponse:
+    """Draft a search, run it, and let the model correct itself against the real
+    results. Streams NDJSON because the loop takes tens of seconds."""
+    async def gen():
+        try:
+            async for event in compose.run(body.prompt.strip()):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:                      # never leave the stream hanging
+            log.exception("compose failed")
+            yield json.dumps({"step": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 class NewSearch(BaseModel):
