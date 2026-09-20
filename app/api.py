@@ -16,7 +16,8 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import ai, db
+from . import ai, db, filters
+from .config import NEARBY_KM
 from .sources import kleinanzeigen as ka
 
 TOKEN = os.environ.get("DEALS_API_TOKEN", "")
@@ -33,9 +34,14 @@ async def guard(request: Request, authorization: str = Header(default="")) -> No
         raise HTTPException(401, "bad token")
 
 
+# must stay in step with filters.is_shipped
+SHIPPED_SQL = "(l.shipping = 1 AND (l.distance_km IS NULL OR l.distance_km > ?))"
+
+
 def _row(r) -> dict:
     d = dict(r)
     d["price_eur"] = None if d.get("price_cents") is None else d["price_cents"] / 100
+    d["shipped"] = filters.is_shipped(d)
     return d
 
 
@@ -97,9 +103,11 @@ def feed(limit: int = 60, search: int | None = None, verdict: str | None = None,
         where.append("m.search_id = ?")
         params.append(search)
     if shipping == "ship":
-        where.append("l.shipping = 1")
+        where.append(SHIPPED_SQL)
+        params.append(NEARBY_KM)
     elif shipping == "pickup":
-        where.append("l.shipping = 0")
+        where.append(f"NOT {SHIPPED_SQL}")
+        params.append(NEARBY_KM)
     if verdict == "unrated":
         where.append("m.verdict IS NULL")
     elif verdict:

@@ -18,6 +18,10 @@ USER_AGENT = (
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
+# Plenty of nearby sellers tick "Versand moeglich" as well. Below this distance
+# you would just go and get it, so a listing only counts as shipped beyond it.
+NEARBY_KM = float(os.environ.get("DEALS_NEARBY_KM", "15"))
+
 # A fetch that returns HTTP 200 but no ads means the markup changed under us.
 # After this many in a row we alert instead of failing silently.
 EMPTY_PARSE_ALERT_AFTER = 3

@@ -8,8 +8,24 @@ from __future__ import annotations
 
 import re
 
+from .config import NEARBY_KM
+
 # "Suche Playstation" is a wanted-ad; anzeige:angebote misses some of them.
 _WANTED = re.compile(r"^\s*(suche|gesucht|ankauf|kaufe)\b", re.I)
+
+
+def is_shipped(listing: dict, nearby_km: float = NEARBY_KM) -> bool:
+    """Does this listing actually need shipping?
+
+    Kleinanzeigen's own flag says only that the seller is willing to post it,
+    and most nearby sellers tick it too. Something 4 km away you simply collect,
+    so it is not a Versand listing however the seller labelled it. An unknown
+    distance counts as far: we cannot claim it is around the corner.
+    """
+    if not listing.get("shipping"):
+        return False
+    dist = listing.get("distance_km")
+    return dist is None or float(dist) > nearby_km
 
 
 def _haystack(listing: dict) -> str:
@@ -39,13 +55,14 @@ def check(listing: dict, spec: dict) -> tuple[bool, str | None]:
     dist = listing.get("distance_km")
     shipping_ok = bool(listing.get("shipping"))
 
-    # Kleinanzeigen already applied versand:ja / versand:nein, but a search can
-    # be edited after its listings were stored, so re-check rather than trust it.
+    # The mode is judged on the derived meaning, not on the raw flag: a seller
+    # 4 km away who also posts is still something you collect.
     mode = spec.get("shipping", "any")
-    if mode in ("only", "ship") and not shipping_ok:
-        return False, "pickup-only-listing"
-    if mode == "pickup" and shipping_ok:
-        return False, "shipped-listing"
+    shipped = is_shipped(listing)
+    if mode in ("only", "ship") and not shipped:
+        return False, "collectable-not-shipped"
+    if mode == "pickup" and shipped:
+        return False, "too-far-shipped-only"
 
     if radius is not None and dist is not None and dist > float(radius) and not shipping_ok:
         return False, "too-far-and-no-shipping"

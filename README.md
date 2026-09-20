@@ -59,6 +59,22 @@ failure that otherwise goes unnoticed for weeks.
 shipping all filter server-side, so they cost no AI. Ad ids increase with
 posting time, which is what makes "new since last poll" a single cheap request.
 
+## Abholen vs Versand
+
+Kleinanzeigen's "Versand möglich" only says the seller is *willing* to post, and
+plenty of sellers two streets away tick it. A listing therefore counts as
+**Versand** only when it is further than `DEALS_NEARBY_KM` (default 15) — closer
+than that you would simply collect it, whatever the seller ticked. An unknown
+distance counts as far, since we cannot claim it is around the corner.
+
+The raw flag stays in `listings.shipping` as Kleinanzeigen reported it; the
+derived meaning lives in `filters.is_shipped()` and its SQL twin `SHIPPED_SQL`
+in `api.py` — **change both together**.
+
+A `pickup` search deliberately does *not* send `versand:nein`: that would drop
+nearby sellers who also offer posting, and those are exactly the ones worth
+collecting. It fetches the radius and applies the distance rule locally.
+
 ## The AI relevance filter
 
 Each search can carry an `intent`: one or two sentences saying what actually
