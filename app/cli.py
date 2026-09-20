@@ -35,6 +35,8 @@ def cmd_add(args):
         "radius_km": args.radius,
         "location_id": args.location,
         "shipping": args.shipping,
+        "intent": args.intent or "",
+        "min_score": args.min_score,
         "offers_only": True,
     }
     sid = db.add_search(args.name, args.keyword, spec)
@@ -132,6 +134,50 @@ def cmd_poll(args):
     asyncio.run(go())
 
 
+def cmd_judge(args):
+    """Run the relevance judge over a search's listings."""
+    import asyncio as _asyncio
+    from . import ai
+    db.init()
+    with db.connect() as con:
+        rows = con.execute(
+            "SELECT * FROM searches WHERE (? IS NULL OR name=?)", (args.search, args.search)
+        ).fetchall()
+
+    async def go():
+        async with httpx.AsyncClient() as client:
+            for row in rows:
+                spec = json.loads(row["spec"] or "{}")
+                intent = (spec.get("intent") or "").strip()
+                if not intent:
+                    print(f"{row['name']}: no intent set, skipped")
+                    continue
+                listings = [dict(r) for r in (db.all_matched(row["id"]) if args.all
+                                              else db.unjudged(row["id"]))]
+                if not listings:
+                    print(f"{row['name']}: nothing to judge")
+                    continue
+                verdicts = await ai.judge(client, intent, listings)
+                min_score = int(spec.get("min_score") or ai.DEFAULT_MIN_SCORE)
+                p = f = 0
+                for li in listings:
+                    v = verdicts.get(li["source_id"])
+                    if v is None:
+                        continue
+                    ok = ai.passes(v, min_score)
+                    db.set_verdict(row["id"], li["source"], li["source_id"], v, ok)
+                    if ok:
+                        p += 1
+                    else:
+                        f += 1
+                        db.mark_notified(row["id"], li["source"], li["source_id"])
+                    if args.verbose:
+                        mark = "PASS" if ok else "drop"
+                        print(f"  {mark} {v['score']:>3} {li['title'][:54]:<54} {v['reason']}")
+                print(f"{row['name']}: {p} kept, {f} filtered out")
+    _asyncio.run(go())
+
+
 def cmd_recent(args):
     db.init()
     with db.connect() as con:
@@ -166,6 +212,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--radius", type=int, default=10)
     a.add_argument("--location", default="l3331", help="l3331 = Berlin")
     a.add_argument("--shipping", choices=["any", "ship", "pickup"], default="any")
+    a.add_argument("--intent", help="plain language: what actually counts as a match")
+    a.add_argument("--min-score", type=int, default=50)
     a.set_defaults(func=cmd_add)
 
     sub.add_parser("ls").set_defaults(func=cmd_ls)
@@ -180,6 +228,12 @@ def build_parser() -> argparse.ArgumentParser:
     po = sub.add_parser("poll", help="one pass, then exit")
     po.add_argument("--quiet", action="store_true", help="do not send Telegram messages")
     po.set_defaults(func=cmd_poll)
+
+    j = sub.add_parser("judge", help="run the AI relevance filter over stored matches")
+    j.add_argument("--search", help="search name (default: all)")
+    j.add_argument("--all", action="store_true", help="re-judge everything, not just unjudged")
+    j.add_argument("--verbose", "-v", action="store_true")
+    j.set_defaults(func=cmd_judge)
 
     r = sub.add_parser("recent")
     r.add_argument("--limit", type=int, default=20)

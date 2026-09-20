@@ -9,6 +9,7 @@ before anyone else notices. Runs in **CT 107 `deals`** (192.168.1.57).
 |---|---|
 | `app/sources/kleinanzeigen.py` | URL builder + result-page parser |
 | `app/filters.py` | the free half of matching (keywords, wanted-ads, distance) |
+| `app/ai.py` | relevance judging with granite4.2:8b + the numeric guard |
 | `app/poller.py` | the loop: global rate limiter, dedupe, parse-break alarm |
 | `app/notify.py` | Telegram cards |
 | `app/cli.py` | `deals` command |
@@ -58,12 +59,32 @@ failure that otherwise goes unnoticed for weeks.
 shipping all filter server-side, so they cost no AI. Ad ids increase with
 posting time, which is what makes "new since last poll" a single cheap request.
 
+## The AI relevance filter
+
+Each search can carry an `intent`: one or two sentences saying what actually
+counts. Only listings that survived the free filters are shown to the model, and
+only the ones new since the last poll, so most polls never call it at all.
+
+**The model is not trusted with numbers.** In a production run it kept a 4 TB
+drive for a "mindestens 6 TB" search with score 100, and kept a 512 GB SSD whose
+own reason read *"1 TB minimum nicht erreicht"*. So any size or inch bound in the
+intent (`mindestens 6 TB`, `maximal 27 Zoll`, `ab 1 TB`) is enforced in code
+against the listing title, and that verdict overrides the model's.
+
+The guard uses the **largest** matching number in the title and does nothing when
+the title states no number — both choices fail open, because a missed bargain
+costs more than one extra card in the feed. Judging as a whole fails open too: if
+Ollama is down the listing goes through unjudged.
+
+    deals judge --all -v        # re-run over everything, showing each verdict
+
 ## Status
 
 - **Phase 0/1 — done.** Kleinanzeigen source, scheduler, dedupe, hard filters, Telegram.
+- **Phase 3 — done.** Relevance judging (`app/ai.py`), intents, `/deals` shows what
+  was filtered and why.
 - Phase 2 — eBay Browse API (`EBAY_DE`). `ebay.de` HTML is 403, the API is not.
   Cache the OAuth app token: the token endpoint allows only 1000 calls/day.
-- Phase 3 — granite4.2:8b relevance scoring + natural-language query compiler.
 - Phase 4 — price stats, backfill sweep on save, deal score (non-monotonic:
   >75 % off is a scam signal, not a steal).
 - Phase 5 — `/deals` page in the dashboard, 👍/👎 feedback.

@@ -6,14 +6,17 @@ delete a saved search.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
 
+import httpx
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import db
+from . import ai, db
 from .sources import kleinanzeigen as ka
 
 TOKEN = os.environ.get("DEALS_API_TOKEN", "")
@@ -43,7 +46,10 @@ def status() -> dict:
         counts = con.execute(
             """SELECT COUNT(*) AS listings,
                       (SELECT COUNT(*) FROM matches) AS matches,
-                      (SELECT COUNT(*) FROM matches WHERE notified_at IS NULL) AS queued
+                      (SELECT COUNT(*) FROM matches WHERE notified_at IS NULL
+                         AND COALESCE(passed, 1) = 1) AS queued,
+                      (SELECT COUNT(*) FROM matches WHERE passed = 0) AS filtered,
+                      (SELECT COUNT(*) FROM matches WHERE judged_at IS NULL) AS unjudged
                FROM listings""").fetchone()
         day = con.execute(
             "SELECT COUNT(*) AS n FROM listings WHERE first_seen_at > ?",
@@ -58,6 +64,8 @@ def status() -> dict:
         "listings": counts["listings"],
         "matches": counts["matches"],
         "queued": counts["queued"],
+        "filtered": counts["filtered"],
+        "unjudged": counts["unjudged"],
         "seen_24h": day["n"],
     }
 
@@ -79,8 +87,12 @@ def searches() -> list[dict]:
 
 @app.get("/feed", dependencies=[Depends(guard)])
 def feed(limit: int = 60, search: int | None = None, verdict: str | None = None,
-         shipping: str | None = None) -> list[dict]:
+         shipping: str | None = None, show: str = "passed") -> list[dict]:
     where, params = ["1=1"], []
+    if show == "passed":
+        where.append("COALESCE(m.passed, 1) = 1")
+    elif show == "rejected":
+        where.append("m.passed = 0")
     if search:
         where.append("m.search_id = ?")
         params.append(search)
@@ -96,7 +108,8 @@ def feed(limit: int = 60, search: int | None = None, verdict: str | None = None,
     params.append(min(limit, 200))
     with db.connect() as con:
         rows = con.execute(f"""
-            SELECT l.*, m.search_id, m.score, m.verdict, m.matched_at, s.name AS search_name
+            SELECT l.*, m.search_id, m.score, m.reason, m.passed, m.judged_at,
+                   m.verdict, m.matched_at, s.name AS search_name
             FROM matches m
             JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
             JOIN searches s ON s.id=m.search_id
@@ -116,6 +129,8 @@ class NewSearch(BaseModel):
     radius_km: int = 10
     location_id: str = "l3331"
     shipping: str = "any"          # any | ship | pickup ("only" = legacy ship)
+    intent: str = ""               # plain language; empty disables AI judging
+    min_score: int = ai.DEFAULT_MIN_SCORE
 
 
 SHIPPING = {"any", "ship", "pickup"}
@@ -132,6 +147,8 @@ def _spec(body: NewSearch) -> dict:
         "radius_km": max(0, min(body.radius_km, 200)),
         "location_id": body.location_id if body.location_id.startswith("l") else "l3331",
         "shipping": shipping if shipping in SHIPPING else "any",
+        "intent": body.intent.strip()[:600],
+        "min_score": max(0, min(int(body.min_score), 100)),
         "offers_only": True,
     }
 
@@ -158,6 +175,45 @@ def edit_search(sid: int, body: NewSearch) -> dict:
     if not ok:
         raise HTTPException(404, "no such search")
     return {"id": sid, "url": ka.build_url(spec), **db.rematch(sid, spec)}
+
+
+@app.post("/searches/{sid}/rejudge", dependencies=[Depends(guard)])
+async def rejudge(sid: int, all: bool = False) -> dict:
+    """Run the judge over listings this search already matched.
+
+    Needed after adding or changing an intent, otherwise the feed keeps showing
+    what was collected under the old rules.
+    """
+    with db.connect() as con:
+        row = con.execute("SELECT * FROM searches WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "no such search")
+    spec = json.loads(row["spec"] or "{}")
+    intent = (spec.get("intent") or "").strip()
+    if not intent:
+        raise HTTPException(400, "this search has no intent to judge against")
+
+    listings = [dict(r) for r in (db.all_matched(sid) if all else db.unjudged(sid))]
+    if not listings:
+        return {"judged": 0, "passed": 0, "filtered": 0}
+
+    min_score = int(spec.get("min_score") or ai.DEFAULT_MIN_SCORE)
+    async with httpx.AsyncClient() as client:
+        verdicts = await ai.judge(client, intent, listings)
+
+    passed = filtered = 0
+    for li in listings:
+        v = verdicts.get(li["source_id"])
+        if v is None:
+            continue                      # model never answered; leave unjudged
+        ok = ai.passes(v, min_score)
+        db.set_verdict(sid, li["source"], li["source_id"], v, ok)
+        if ok:
+            passed += 1
+        else:
+            filtered += 1
+            db.mark_notified(sid, li["source"], li["source_id"])
+    return {"judged": passed + filtered, "passed": passed, "filtered": filtered}
 
 
 @app.post("/searches/{sid}/{action}", dependencies=[Depends(guard)])

@@ -46,7 +46,10 @@ CREATE TABLE IF NOT EXISTS matches (
     source_id   TEXT NOT NULL,
     matched_at  REAL NOT NULL,
     notified_at REAL,
-    score       REAL,                -- filled from phase 4 on
+    score       REAL,                -- AI relevance 0-100 (phase 4 adds a deal score)
+    reason      TEXT,                -- the model's one-liner
+    passed      INTEGER,             -- 1 ok / 0 filtered out / NULL not judged
+    judged_at   REAL,
     verdict     TEXT,                -- user feedback: up | down
     PRIMARY KEY (search_id, source, source_id)
 );
@@ -66,9 +69,23 @@ def connect() -> sqlite3.Connection:
     return con
 
 
+MIGRATIONS = {
+    "matches": {
+        "reason": "ALTER TABLE matches ADD COLUMN reason TEXT",
+        "passed": "ALTER TABLE matches ADD COLUMN passed INTEGER",
+        "judged_at": "ALTER TABLE matches ADD COLUMN judged_at REAL",
+    },
+}
+
+
 def init() -> None:
     with connect() as con:
         con.executescript(SCHEMA)
+        for table, cols in MIGRATIONS.items():
+            have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+            for col, ddl in cols.items():
+                if col not in have:
+                    con.execute(ddl)
 
 
 def add_search(name: str, raw_query: str, spec: dict) -> int:
@@ -111,7 +128,7 @@ def rematch(search_id: int, spec: dict) -> dict:
                 con.execute(
                     """INSERT INTO matches (search_id, source, source_id, matched_at, notified_at)
                        VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                    (search_id, *key, now, now))
+                    (search_id, *key, now, now))   # judged_at stays NULL -> rejudge picks it up
                 added += 1
             elif not keep and key in current:
                 con.execute(
@@ -155,6 +172,39 @@ def record_match(search_id: int, source: str, source_id: str) -> bool:
         return cur.rowcount > 0
 
 
+def set_verdict(search_id: int, source: str, source_id: str,
+                verdict: dict | None, passed: bool) -> None:
+    with connect() as con:
+        con.execute(
+            """UPDATE matches SET score=?, reason=?, passed=?, judged_at=?
+               WHERE search_id=? AND source=? AND source_id=?""",
+            (None if verdict is None else verdict["score"],
+             None if verdict is None else verdict["reason"],
+             1 if passed else 0,
+             None if verdict is None else time.time(),
+             search_id, source, source_id))
+
+
+def unjudged(search_id: int, limit: int = 200) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """SELECT l.* FROM matches m
+               JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
+               WHERE m.search_id=? AND m.judged_at IS NULL
+               ORDER BY COALESCE(l.posted_at, l.first_seen_at) DESC LIMIT ?""",
+            (search_id, limit)).fetchall()
+
+
+def all_matched(search_id: int, limit: int = 500) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """SELECT l.* FROM matches m
+               JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
+               WHERE m.search_id=?
+               ORDER BY COALESCE(l.posted_at, l.first_seen_at) DESC LIMIT ?""",
+            (search_id, limit)).fetchall()
+
+
 def pending_notifications(limit: int = 20) -> list[sqlite3.Row]:
     with connect() as con:
         return con.execute(
@@ -162,7 +212,7 @@ def pending_notifications(limit: int = 20) -> list[sqlite3.Row]:
                FROM matches m
                JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
                JOIN searches s ON s.id=m.search_id
-               WHERE m.notified_at IS NULL
+               WHERE m.notified_at IS NULL AND COALESCE(m.passed, 1) = 1
                ORDER BY l.posted_at DESC NULLS LAST, l.first_seen_at DESC
                LIMIT ?""",
             (limit,),

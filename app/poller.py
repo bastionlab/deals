@@ -15,7 +15,7 @@ import time
 
 import httpx
 
-from . import db, filters, notify
+from . import ai, db, filters, notify
 from .config import (EMPTY_PARSE_ALERT_AFTER, FETCH_JITTER, FETCH_MIN_INTERVAL,
                      HTTP_TIMEOUT, USER_AGENT)
 from .sources import kleinanzeigen as ka
@@ -102,8 +102,8 @@ async def poll_search(client: httpx.AsyncClient, row, backoff: Backoff) -> int:
                                        f"({streak}x in Folge) — Markup hat sich vermutlich geändert.")
         return 0
 
-    queued = 0
     max_id = row["max_seen_id"]
+    candidates: list[tuple[dict, bool]] = []       # (listing, is_new_since_last_poll)
     for ad in ads:
         ad_id = int(ad["source_id"])
         max_id = max(max_id, ad_id)
@@ -114,14 +114,31 @@ async def poll_search(client: httpx.AsyncClient, row, backoff: Backoff) -> int:
             continue
         if not db.record_match(row["id"], ad["source"], ad["source_id"]):
             continue                               # already known for this search
-        if seeding or ad_id <= row["max_seen_id"]:
-            db.mark_notified(row["id"], ad["source"], ad["source_id"])  # backfill, stay quiet
-        else:
+        candidates.append((ad, not seeding and ad_id > row["max_seen_id"]))
+
+    # The model only ever sees what survived the free filters, and only the
+    # handful that are new -- usually zero, so most polls never call it at all.
+    intent = (spec.get("intent") or "").strip()
+    min_score = int(spec.get("min_score") or ai.DEFAULT_MIN_SCORE)
+    verdicts = await ai.judge(client, intent, [a for a, _ in candidates]) if candidates else {}
+
+    queued = rejected = 0
+    for ad, is_new in candidates:
+        v = verdicts.get(ad["source_id"])
+        ok = ai.passes(v, min_score)
+        if intent:
+            db.set_verdict(row["id"], ad["source"], ad["source_id"], v, ok)
+        if not ok:
+            db.mark_notified(row["id"], ad["source"], ad["source_id"])   # filtered, stay quiet
+            rejected += 1
+        elif is_new:
             queued += 1
+        else:
+            db.mark_notified(row["id"], ad["source"], ad["source_id"])   # backfill, stay quiet
 
     db.update_search_state(row["id"], max_seen_id=max_id)
-    log.info("[%s] %d ads, %d new to push%s", row["name"], len(ads), queued,
-             " (seeded)" if seeding else "")
+    log.info("[%s] %d ads, %d new to push, %d filtered by AI%s", row["name"], len(ads),
+             queued, rejected, " (seeded)" if seeding else "")
     return queued
 
 
