@@ -8,6 +8,7 @@ from datetime import datetime
 import httpx
 
 from .config import HTTP_TIMEOUT, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
+from .filters import is_shipped
 
 log = logging.getLogger("notify")
 API = "https://api.telegram.org/bot{token}/{method}"
@@ -44,7 +45,8 @@ def caption(row) -> str:
     where = " · ".join(x for x in [
         e(row["district"] or ""),
         f"{row['distance_km']:.0f} km" if row["distance_km"] is not None else "",
-        "📦 Versand" if row["shipping"] else "",
+        # the derived meaning, not KA's flag: a seller 4 km away who also posts is Abholen
+        "📦 Versand" if is_shipped(dict(row)) else "🚲 Abholen",
     ] if x)
     lines = [
         f"<b>{e(row['title'])}</b>",
@@ -78,10 +80,14 @@ async def send(client: httpx.AsyncClient, row) -> bool:
         return False
 
 
-async def alert(client: httpx.AsyncClient, text: str) -> None:
+async def alert(client: httpx.AsyncClient, text: str) -> bool:
     """Operational alerts (parser broke, source unreachable) -- same chat, plain."""
     try:
-        await client.post(_api("sendMessage"), json={
+        r = await client.post(_api("sendMessage"), json={
             "chat_id": TELEGRAM_CHAT_ID, "text": f"⚠️ {text}"}, timeout=HTTP_TIMEOUT)
     except httpx.HTTPError:
         log.error("could not deliver alert: %s", text)
+        return False
+    if r.status_code != 200:
+        log.error("telegram refused alert: %s", r.text[:300])
+    return r.status_code == 200

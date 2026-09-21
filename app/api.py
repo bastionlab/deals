@@ -14,7 +14,7 @@ import time
 
 import httpx
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -38,7 +38,8 @@ async def guard(request: Request, authorization: str = Header(default="")) -> No
 
 
 # must stay in step with filters.is_shipped
-SHIPPED_SQL = "(l.shipping = 1 AND (l.distance_km IS NULL OR l.distance_km > ?))"
+SHIPPED_SQL = ("(l.shipping = 1 AND CASE WHEN l.distance_km IS NOT NULL THEN l.distance_km > ? "
+               "ELSE COALESCE(l.postal_code NOT BETWEEN '10115' AND '14199', 1) END)")
 
 
 def _row(r) -> dict:
@@ -203,7 +204,7 @@ def _spec(body: NewSearch) -> dict:
     shipping = "ship" if body.shipping == "only" else body.shipping
     return {
         "keyword": body.keyword.strip(),
-        "terms": [t for t in body.terms if t.strip()] or [body.keyword.strip()],
+        "terms": [t for t in body.terms if t.strip()] or [k for k in ka.keywords({"keyword": body.keyword}) if k],
         "exclude": [t for t in body.exclude if t.strip()],
         "min_price": body.min_price,
         "max_price": body.max_price,
@@ -227,10 +228,20 @@ def add_search(body: NewSearch) -> dict:
 
 
 @app.post("/searches/{sid}/edit", dependencies=[Depends(guard)])
-def edit_search(sid: int, body: NewSearch) -> dict:
+async def edit_search(sid: int, body: NewSearch, tasks: BackgroundTasks) -> dict:
     """Edit and re-apply. max_seen_id is deliberately left alone: widening a
-    search must not make the next poll treat old ads as new and push them."""
+    search must not make the next poll treat old ads as new and push them.
+
+    A changed intent re-judges everything already matched in the background,
+    otherwise verdicts made under the old wording stick (a 500 GB SSD stayed
+    rejected as "< 1 TB" after the minimum was lowered to 500 GB)."""
     spec = _spec(body)
+    with db.connect() as con:
+        old = con.execute("SELECT spec FROM searches WHERE id=?", (sid,)).fetchone()
+    old_spec = json.loads(old["spec"] or "{}") if old else {}
+    if spec["intent"] and (spec["intent"] != (old_spec.get("intent") or "").strip()
+                           or spec["min_score"] != old_spec.get("min_score")):
+        tasks.add_task(rejudge, sid, True)
     try:
         ok = db.update_search(sid, body.name.strip(), spec)
     except Exception as exc:

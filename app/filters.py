@@ -20,12 +20,20 @@ def is_shipped(listing: dict, nearby_km: float = NEARBY_KM) -> bool:
     Kleinanzeigen's own flag says only that the seller is willing to post it,
     and most nearby sellers tick it too. Something 4 km away you simply collect,
     so it is not a Versand listing however the seller labelled it. An unknown
-    distance counts as far: we cannot claim it is around the corner.
+    distance counts as far unless the postcode is in Berlin.
     """
     if not listing.get("shipping"):
         return False
     dist = listing.get("distance_km")
-    return dist is None or float(dist) > nearby_km
+    if dist is not None:
+        return float(dist) > nearby_km
+    return not is_berlin_plz(listing.get("postal_code"))
+
+
+def is_berlin_plz(plz: str | None) -> bool:
+    """Berlin's own postcodes, 10115-14199. The fallback when a card shows no
+    distance: an ad in Berlin is something you collect, not something posted."""
+    return bool(plz) and "10115" <= plz <= "14199"
 
 
 def _haystack(listing: dict) -> str:

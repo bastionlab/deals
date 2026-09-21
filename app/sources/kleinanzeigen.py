@@ -24,7 +24,10 @@ SOURCE = "kleinanzeigen"
 _ARTICLE = re.compile(r'<article[^>]*\sdata-adid="(\d+)"[^>]*\sdata-href="([^"]+)"(.*?)</article>', re.S)
 _LDJSON = re.compile(r'<script type="application/ld\+json">(.*?)</script>', re.S)
 _H3 = re.compile(r'<h3[^>]*>.*?<a[^>]*>(.*?)</a>', re.S)
-_LOC = re.compile(r'<span>(\d{5})\s+([^<]{1,60}?)</span>(?:\s*<span[^>]*>\((\d+(?:[.,]\d+)?)\s*km\)</span>)?')
+# Some cards say "(ca. 10 km)" instead of "(10 km)". Missing that left the
+# distance unknown, and unknown counts as far -- Berlin ads showed up as Versand.
+_LOC = re.compile(r'<span>(\d{5})\s+([^<]{1,60}?)</span>'
+                  r'(?:\s*<span[^>]*>\((?:ca\.?\s*)?(\d+(?:[.,]\d+)?)\s*km\)</span>)?')
 _WHEN = re.compile(r'<span>(Heute|Gestern),\s*(\d{1,2}):(\d{2})</span>|<span>(\d{2})\.(\d{2})\.(\d{4})</span>')
 _PRICE = re.compile(r'>\s*(?:(\d{1,3}(?:\.\d{3})*|\d+)\s*€\s*(VB)?|(VB)|(Zu verschenken))\s*<')
 
@@ -39,7 +42,19 @@ def slug(text: str) -> str:
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", text)).strip("-")
 
 
-def build_url(spec: dict, page: int = 1) -> str:
+def keywords(spec: dict) -> list[str]:
+    """A search may poll several keywords: "rtx 3060, rtx 3090".
+
+    Kleinanzeigen's search box needs EVERY word to appear, so one broad
+    keyword ("nvidia grafikkarte rtx") silently misses most ads -- sellers
+    write "MSI RTX 3060 Ventus". Several short keywords, one URL each, and the
+    local terms/exclude/AI filters do the narrowing.
+    """
+    kws = [k.strip() for k in (spec.get("keyword") or "").split(",") if k.strip()]
+    return kws or [""]
+
+
+def build_url(spec: dict, page: int = 1, keyword: str | None = None) -> str:
     """Compose a search URL. All of these filters run server-side, so the
     location/radius/price/shipping half of the job costs us no AI at all."""
     parts: list[str] = []
@@ -58,7 +73,7 @@ def build_url(spec: dict, page: int = 1) -> str:
     shipping = spec.get("shipping", "any")
     if shipping in ("only", "ship"):
         parts.append("versand:ja")
-    kw = spec.get("keyword") or ""
+    kw = keyword if keyword is not None else keywords(spec)[0]
     if kw:
         parts.append(slug(kw))
     loc = spec.get("location_id", "l3331")          # l3331 = Berlin

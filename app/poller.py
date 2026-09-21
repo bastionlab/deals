@@ -2,8 +2,9 @@
 
 One global rate limiter, not one per search: how hard we hit Kleinanzeigen
 must not depend on how many searches you happen to have saved. Searches are
-served round-robin (oldest last_polled_at first), so with N searches each one
-refreshes every N * FETCH_MIN_INTERVAL seconds.
+served round-robin (oldest last_polled_at first), one request per keyword, so
+with K keywords across all searches each URL refreshes every K * FETCH_MIN_INTERVAL
+seconds.
 """
 from __future__ import annotations
 
@@ -24,6 +25,10 @@ log = logging.getLogger("poller")
 
 HEADERS = BROWSER_HEADERS
 MAX_NOTIFY_PER_FLUSH = 8
+# An ad counts as new if it was posted within this window. Comparing ids against
+# max_seen_id alone silently swallowed bumped ads and ads that only one of a
+# search's keywords finds; record_match already guarantees each ad fires once.
+FRESH_SECONDS = 24 * 3600
 
 
 class RateLimiter:
@@ -60,11 +65,19 @@ class Backoff:
         self.alerted = False
 
 
-async def poll_search(client: httpx.AsyncClient, row, backoff: Backoff) -> int:
-    """Fetch page 1 of one search. Returns the number of listings queued for push."""
+def _is_fresh(ad: dict, max_seen_id: int, now: float) -> bool:
+    if ad.get("posted_at"):
+        return ad["posted_at"] >= now - FRESH_SECONDS
+    return int(ad["source_id"]) > max_seen_id
+
+
+async def poll_search(client: httpx.AsyncClient, row, backoff: Backoff,
+                      keyword: str | None = None) -> int:
+    """Fetch page 1 of one search keyword. Returns the number of listings queued for push."""
     spec = json.loads(row["spec"] or "{}")
-    url = ka.build_url(spec, page=1)
+    url = ka.build_url(spec, page=1, keyword=keyword)
     seeding = row["max_seen_id"] == 0
+    now = time.time()
 
     try:
         resp = await client.get(url, timeout=HTTP_TIMEOUT)
@@ -109,7 +122,7 @@ async def poll_search(client: httpx.AsyncClient, row, backoff: Backoff) -> int:
             continue
         if not db.record_match(row["id"], ad["source"], ad["source_id"]):
             continue                               # already known for this search
-        candidates.append((ad, not seeding and ad_id > row["max_seen_id"]))
+        candidates.append((ad, not seeding and _is_fresh(ad, row["max_seen_id"], now)))
 
     # The model only ever sees what survived the free filters, and only the
     # handful that are new -- usually zero, so most polls never call it at all.
@@ -132,8 +145,8 @@ async def poll_search(client: httpx.AsyncClient, row, backoff: Backoff) -> int:
             db.mark_notified(row["id"], ad["source"], ad["source_id"])   # backfill, stay quiet
 
     db.update_search_state(row["id"], max_seen_id=max_id)
-    log.info("[%s] %d ads, %d new to push, %d filtered by AI%s", row["name"], len(ads),
-             queued, rejected, " (seeded)" if seeding else "")
+    log.info("[%s|%s] %d ads, %d new to push, %d filtered by AI%s", row["name"], keyword or "",
+             len(ads), queued, rejected, " (seeded)" if seeding else "")
     return queued
 
 
@@ -153,6 +166,9 @@ async def run() -> None:
     limiter = RateLimiter(FETCH_MIN_INTERVAL, FETCH_JITTER)
     backoff = Backoff()
     log.info("poller up (interval %.1fs)", FETCH_MIN_INTERVAL)
+    if not notify.configured():
+        log.warning("Telegram not configured (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID empty) -- "
+                    "nothing will be pushed. Message the bot, run `deals chatid`, put the id in /etc/deals/deals.env.")
 
     async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
         while True:
@@ -161,15 +177,16 @@ async def run() -> None:
                 await asyncio.sleep(30)
                 continue
             for row in searches:
-                await limiter.wait()
-                if (pen := backoff.penalty()):
-                    log.info("backing off %.0fs", pen)
-                    await asyncio.sleep(pen)
-                try:
-                    await poll_search(client, row, backoff)
-                except Exception:
-                    log.exception("[%s] unexpected error", row["name"])
-                await flush(client)
+                for kw in ka.keywords(json.loads(row["spec"] or "{}")):
+                    await limiter.wait()
+                    if (pen := backoff.penalty()):
+                        log.info("backing off %.0fs", pen)
+                        await asyncio.sleep(pen)
+                    try:
+                        await poll_search(client, row, backoff, kw)
+                    except Exception:
+                        log.exception("[%s] unexpected error", row["name"])
+                    await flush(client)
 
 
 def main() -> None:

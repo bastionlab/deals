@@ -108,11 +108,13 @@ def cmd_chatid(args):
 def cmd_testsend(args):
     async def go():
         async with httpx.AsyncClient() as client:
-            await notify.alert(client, "Testnachricht vom deals-poller — Verbindung steht.")
+            return await notify.alert(client, "Testnachricht vom deals-poller — Verbindung steht.")
     if not notify.configured():
         print("TELEGRAM_TOKEN / TELEGRAM_CHAT_ID not set in the environment")
         sys.exit(1)
-    asyncio.run(go())
+    if not asyncio.run(go()):
+        print("telegram refused the message -- see the error above")
+        sys.exit(1)
     print("sent")
 
 
@@ -127,10 +129,11 @@ def cmd_poll(args):
         backoff = Backoff()
         async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
             for row in db.active_searches():
-                await poll_search(client, row, backoff)
-                if not args.quiet:
-                    await flush(client)
-                await asyncio.sleep(2)
+                for kw in ka.keywords(json.loads(row["spec"] or "{}")):
+                    await poll_search(client, row, backoff, kw)
+                    if not args.quiet:
+                        await flush(client)
+                    await asyncio.sleep(2)
     asyncio.run(go())
 
 

@@ -167,20 +167,25 @@ def active_searches() -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def upsert_listing(li: dict) -> bool:
-    """Insert a listing. Returns True if it was new to us."""
+def upsert_listing(li: dict) -> None:
+    """Insert a listing, or refresh what can change on a re-seen one (price,
+    shipping, and location fields an older parser missed)."""
     with connect() as con:
-        cur = con.execute(
+        con.execute(
             """INSERT INTO listings (source, source_id, url, title, description,
                    price_cents, price_type, postal_code, district, distance_km,
                    shipping, posted_at, image_url, first_seen_at, raw)
                VALUES (:source,:source_id,:url,:title,:description,:price_cents,
                    :price_type,:postal_code,:district,:distance_km,:shipping,
                    :posted_at,:image_url,:first_seen_at,:raw)
-               ON CONFLICT(source, source_id) DO NOTHING""",
+               ON CONFLICT(source, source_id) DO UPDATE SET
+                   price_cents=excluded.price_cents, price_type=excluded.price_type,
+                   shipping=excluded.shipping,
+                   distance_km=COALESCE(excluded.distance_km, distance_km),
+                   postal_code=COALESCE(excluded.postal_code, postal_code),
+                   district=COALESCE(excluded.district, district)""",
             {**li, "first_seen_at": time.time()},
         )
-        return cur.rowcount > 0
 
 
 def record_match(search_id: int, source: str, source_id: str) -> bool:
@@ -235,6 +240,7 @@ def pending_notifications(limit: int = 20) -> list[sqlite3.Row]:
                JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
                JOIN searches s ON s.id=m.search_id
                WHERE m.notified_at IS NULL AND COALESCE(m.passed, 1) = 1
+                 AND m.matched_at > strftime('%s','now') - 86400   -- no stale flood after an outage
                ORDER BY l.posted_at DESC NULLS LAST, l.first_seen_at DESC
                LIMIT ?""",
             (limit,),

@@ -1,11 +1,11 @@
 """Relevance judging with the local model in CT 105.
 
 Keyword filters cannot express "at least 6 TB", which is how 2 TB drives ended
-up in a search for 6 TB ones. This asks granite4.2:8b to judge each candidate
+up in a search for 6 TB ones. This asks qwen3.5:9b to judge each candidate
 against a plain-language statement of what the search is actually after.
 
-granite rather than qwen3.6: only one model fits in 12 GB of VRAM and
-warm-model keeps granite resident, so judging never evicts the chat model.
+The small warm model rather than qwen3.6: only one model fits in 12 GB of VRAM
+and warm-model keeps this one resident, so judging never evicts the chat model.
 
 `think: false` is load-bearing -- with thinking on the same call costs roughly
 25x the tokens and 10x the wall clock.
@@ -21,33 +21,42 @@ import httpx
 log = logging.getLogger("ai")
 
 OLLAMA = "http://192.168.1.55:11434"
-MODEL = "granite4.2:8b"
+MODEL = "qwen3.5:9b"
 BATCH = 6
 TIMEOUT = 180.0
 DEFAULT_MIN_SCORE = 50
 
+# No id field on purpose. Asking the model to echo an identifier was the single biggest source of lost
+# verdicts: granite returned "1", qwen3.5 returned "[1]", the listing's title, or even ",". A verdict that
+# cannot be matched back fails open (the listing is notified unjudged), so the verdicts come back as a plain
+# list in the order the listings were given and are zipped by position -- and a batch whose length does not
+# match is re-judged one listing at a time, where position cannot be wrong.
 SCHEMA = {
     "type": "object",
     "properties": {"verdicts": {"type": "array", "items": {
         "type": "object",
         "properties": {
-            "id": {"type": "string"},
             "ok": {"type": "boolean"},
             "score": {"type": "integer"},
             "reason": {"type": "string"},
         },
-        "required": ["id", "ok", "score", "reason"],
+        "required": ["ok", "score", "reason"],
     }}},
     "required": ["verdicts"],
 }
 
 SYSTEM = """Du pruefst Kleinanzeigen-Inserate gegen einen Suchwunsch.
 
+Antworte mit genau einem Verdict pro Inserat, in derselben Reihenfolge wie die Inserate,
+als Liste "verdicts". Ueberspringe kein Inserat und fuege keines hinzu.
+
 Fuer JEDES Inserat:
-- id: die Nummer des Inserats
 - ok: true nur wenn das Inserat den Suchwunsch WIRKLICH erfuellt
 - score: 0-100 wie gut es passt; wenn ok=false immer 0
 - reason: max 8 Woerter, deutsch, warum
+
+Ort, Entfernung, Versand/Abholung und Preis sind schon geprueft und spielen hier
+KEINE Rolle. Bewerte nur, ob das Produkt selbst dem Suchwunsch entspricht.
 
 Sei streng. Typische Gruende fuer ok=false:
 - Zahlenangaben verfehlt (zu wenig TB/GB, falsche Groesse, falsches Modell)
@@ -133,20 +142,21 @@ async def _one_batch(client: httpx.AsyncClient, intent: str, batch: list[dict]) 
     }
     r = await client.post(f"{OLLAMA}/api/chat", json=body, timeout=TIMEOUT)
     r.raise_for_status()
-    payload = json.loads(r.json()["message"]["content"])
-    out: dict[str, dict] = {}
-    for v in payload.get("verdicts", []):
-        try:
-            li = batch[int(v["id"]) - 1]
-        except (ValueError, IndexError, KeyError):
-            continue
-        score = max(0, min(100, int(v.get("score") or 0)))
-        out[li["source_id"]] = {
-            "ok": bool(v.get("ok")),
-            "score": score,
-            "reason": (v.get("reason") or "").strip()[:120],
-        }
-    return out
+    verdicts = json.loads(r.json()["message"]["content"]).get("verdicts") or []
+    if len(verdicts) != len(batch):
+        if len(batch) == 1:
+            log.warning("no usable verdict for %s", batch[0]["source_id"])
+            return {}
+        log.info("%d verdicts for %d listings — re-judging one at a time", len(verdicts), len(batch))
+        out: dict[str, dict] = {}
+        for li in batch:
+            out.update(await _one_batch(client, intent, [li]))
+        return out
+    return {li["source_id"]: {
+        "ok": bool(v.get("ok")),
+        "score": max(0, min(100, int(v.get("score") or 0))),
+        "reason": (v.get("reason") or "").strip()[:120],
+    } for li, v in zip(batch, verdicts)}
 
 
 async def judge(client: httpx.AsyncClient, intent: str, listings: list[dict]) -> dict[str, dict]:
