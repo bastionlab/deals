@@ -5,6 +5,10 @@ must not depend on how many searches you happen to have saved. Searches are
 served round-robin (oldest last_polled_at first), one request per keyword, so
 with K keywords across all searches each URL refreshes every K * FETCH_MIN_INTERVAL
 seconds.
+
+After each search, one listing already in the feed is re-opened to see whether
+it has sold (see `recheck`). Those requests share the same limiter, so they slow
+the search refresh a little rather than adding a second stream of traffic.
 """
 from __future__ import annotations
 
@@ -29,6 +33,9 @@ MAX_NOTIFY_PER_FLUSH = 8
 # max_seen_id alone silently swallowed bumped ads and ads that only one of a
 # search's keywords finds; record_match already guarantees each ad fires once.
 FRESH_SECONDS = 24 * 3600
+# Detail-page rechecks per search served. db.RECHECK_AFTER decides which are due;
+# usually nothing is, and then this costs no request at all.
+RECHECKS_PER_SEARCH = 1
 
 
 class RateLimiter:
@@ -150,6 +157,40 @@ async def poll_search(client: httpx.AsyncClient, row, backoff: Backoff,
     return queued
 
 
+async def recheck(client: httpx.AsyncClient, limiter: RateLimiter, backoff: Backoff,
+                  limit: int = RECHECKS_PER_SEARCH) -> None:
+    """Re-open listings the feed still shows and record whether they sold.
+
+    Plenty of good offers are gone within hours yet stayed in the feed forever,
+    because the search page simply stops listing them and nothing told us.
+    """
+    for row in db.due_rechecks(limit):
+        await limiter.wait()
+        if (pen := backoff.penalty()):
+            await asyncio.sleep(pen)
+        url = row["url"]
+        try:
+            resp = await client.get(url, timeout=HTTP_TIMEOUT, follow_redirects=False)
+            loc = resp.headers.get("location")
+            if resp.is_redirect and loc and row["source_id"] in loc:   # slug changed, same ad
+                resp = await client.get(resp.next_request.url, timeout=HTTP_TIMEOUT,
+                                        follow_redirects=False)
+                loc = resp.headers.get("location")
+        except httpx.HTTPError as exc:
+            log.warning("recheck %s failed: %s", row["source_id"], exc)
+            return
+        if resp.status_code in (403, 429):
+            backoff.hit()
+            return
+        status = ka.ad_status(row["source_id"], resp.status_code, loc, resp.text)
+        prev = db.set_status(row["source"], row["source_id"], status)
+        if status is None:
+            log.warning("recheck %s: unreadable page (http %s)", row["source_id"], resp.status_code)
+        elif status != (prev or "active"):
+            log.info("recheck %s: %s -> %s | %s", row["source_id"], prev or "active", status,
+                     row["title"][:60])
+
+
 async def flush(client: httpx.AsyncClient) -> None:
     if not notify.configured():
         return
@@ -187,11 +228,17 @@ async def run() -> None:
                     except Exception:
                         log.exception("[%s] unexpected error", row["name"])
                     await flush(client)
+                try:
+                    await recheck(client, limiter, backoff)
+                except Exception:
+                    log.exception("recheck failed")
 
 
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx logs every request URL at INFO, and Telegram's carry the bot token
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
         asyncio.run(run())
     except KeyboardInterrupt:

@@ -9,7 +9,7 @@ before anyone else notices. Runs in **CT 107 `deals`** (192.168.1.57).
 |---|---|
 | `app/sources/kleinanzeigen.py` | URL builder + result-page parser |
 | `app/filters.py` | the free half of matching (keywords, wanted-ads, distance) |
-| `app/ai.py` | relevance judging with granite4.2:8b + the numeric guard |
+| `app/ai.py` | relevance judging with qwen3.5:9b + the numeric guard |
 | `app/poller.py` | the loop: global rate limiter, dedupe, parse-break alarm |
 | `app/notify.py` | Telegram cards |
 | `app/cli.py` | `deals` command |
@@ -116,6 +116,30 @@ costs more than one extra card in the feed. Judging as a whole fails open too: i
 Ollama is down the listing goes through unjudged.
 
     deals judge --all -v        # re-run over everything, showing each verdict
+
+**Write the intent from facts, not guesses.** A search for a Fitbit Air was
+composed with "Smartwatch mit Uhrgehäuse und Display"; the Fitbit Air has no
+display, so the model threw out nearly every real device as "nur Armband". A
+named model also covers its variants (`3090` matches `3090 Ti`) unless the
+intent says otherwise; the prompt states that, because the model had been
+rejecting Ti cards as "falsches Modell".
+
+## Sold ads drop out of the feed
+
+The search page simply stops listing a sold ad, so nothing used to tell us. After
+each search the poller re-opens one feed listing that is due (`db.due_rechecks`:
+every 20 min for the first day, 2 h for the first week, then 12 h) through the
+same global rate limiter. `sources.kleinanzeigen.ad_status` reads the answer:
+
+- redirect away from the ad, 404/410 → `gone`
+- new layout: `<h1><span>Reserviert •</span>…` (or Gelöscht / Verkauft)
+- old layout, served on the same URL by A/B test: `showPausedVeil: true` →
+  reserved, `showDeletedVeil: true` → gone
+- anything else unreadable → `None`, only `checked_at` is stamped. A listing is
+  never hidden on a page we could not read.
+
+`gone` is excluded in `_conditions()` (feed, tab counts) and from Telegram;
+`reserved` stays visible with a badge.
 
 ## Status
 

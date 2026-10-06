@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS listings (
     posted_at     REAL,
     image_url     TEXT,
     first_seen_at REAL NOT NULL,
+    status        TEXT,              -- active | reserved | gone; NULL = never rechecked
+    checked_at    REAL,              -- last detail-page recheck
+    gone_at       REAL,
     raw           TEXT,
     PRIMARY KEY (source, source_id)
 );
@@ -74,6 +77,11 @@ MIGRATIONS = {
         "reason": "ALTER TABLE matches ADD COLUMN reason TEXT",
         "passed": "ALTER TABLE matches ADD COLUMN passed INTEGER",
         "judged_at": "ALTER TABLE matches ADD COLUMN judged_at REAL",
+    },
+    "listings": {
+        "status": "ALTER TABLE listings ADD COLUMN status TEXT",
+        "checked_at": "ALTER TABLE listings ADD COLUMN checked_at REAL",
+        "gone_at": "ALTER TABLE listings ADD COLUMN gone_at REAL",
     },
 }
 
@@ -240,6 +248,7 @@ def pending_notifications(limit: int = 20) -> list[sqlite3.Row]:
                JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
                JOIN searches s ON s.id=m.search_id
                WHERE m.notified_at IS NULL AND COALESCE(m.passed, 1) = 1
+                 AND COALESCE(l.status, '') != 'gone'
                  AND m.matched_at > strftime('%s','now') - 86400   -- no stale flood after an outage
                ORDER BY l.posted_at DESC NULLS LAST, l.first_seen_at DESC
                LIMIT ?""",
@@ -271,3 +280,55 @@ def update_search_state(search_id: int, *, max_seen_id: int | None = None,
             (time.time(), error, streak, search_id),
         )
         return streak
+
+
+# How often a listing in the feed is re-opened to see whether it sold, by age.
+# Fresh ads are the ones that go within hours, and the ones worth driving to.
+RECHECK_AFTER = ((24 * 3600, 20 * 60), (7 * 86400, 2 * 3600), (float("inf"), 12 * 3600))
+
+
+def due_rechecks(limit: int, now: float | None = None) -> list[sqlite3.Row]:
+    """Listings someone could still see in the feed, most overdue first.
+
+    Only what the feed shows: AI-rejected and thumbed-down matches are never
+    looked at again, and neither is anything already gone.
+    """
+    now = now or time.time()
+    with connect() as con:
+        rows = con.execute(
+            """SELECT DISTINCT l.source, l.source_id, l.url, l.title, l.status, l.checked_at,
+                      COALESCE(l.posted_at, l.first_seen_at) AS born
+               FROM matches m
+               JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
+               JOIN searches s ON s.id=m.search_id AND s.enabled=1
+               WHERE COALESCE(m.passed, 1) = 1 AND COALESCE(m.verdict, '') != 'down'
+                 AND COALESCE(l.status, '') != 'gone'""").fetchall()
+    due = []
+    for r in rows:
+        age = now - (r["born"] or now)
+        every = next(after for upto, after in RECHECK_AFTER if age < upto)
+        overdue = now - (r["checked_at"] or 0) - every
+        if overdue >= 0:
+            due.append((overdue, r))
+    due.sort(key=lambda x: x[0], reverse=True)
+    return [r for _, r in due[:limit]]
+
+
+def set_status(source: str, source_id: str, status: str | None) -> str | None:
+    """Record a recheck. Returns the previous status. None = page unreadable,
+    which only stamps checked_at so the listing is not retried in a tight loop."""
+    now = time.time()
+    with connect() as con:
+        row = con.execute("SELECT status FROM listings WHERE source=? AND source_id=?",
+                          (source, source_id)).fetchone()
+        prev = row["status"] if row else None
+        if status is None:
+            con.execute("UPDATE listings SET checked_at=? WHERE source=? AND source_id=?",
+                        (now, source, source_id))
+        else:
+            con.execute(
+                """UPDATE listings SET status=?, checked_at=?,
+                       gone_at=CASE WHEN ?='gone' THEN COALESCE(gone_at, ?) ELSE NULL END
+                   WHERE source=? AND source_id=?""",
+                (status, now, status, now, source, source_id))
+    return prev

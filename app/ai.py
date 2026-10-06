@@ -64,6 +64,12 @@ Sei streng. Typische Gruende fuer ok=false:
 - es ist ein anderes Produkt aus derselben Kategorie
 - Zustand passt nicht zum Wunsch
 Wenn eine geforderte Zahl im Inserat nicht auftaucht, nimm NICHT an, dass sie erfuellt ist.
+Ein genanntes Modell schliesst seine Varianten mit ein: "RTX 3090" passt auch auf "RTX 3090 Ti",
+"OC", "Super" usw. Falsches Modell heisst eine andere Nummer, nicht ein Zusatz zur selben Nummer.
+Varianten nur ablehnen, wenn der Suchwunsch sie ausdruecklich ausschliesst.
+"OVP" heisst Originalverpackung: die Ware ist MIT Karton dabei, nicht nur der Karton.
+Fehlt eine Zustandsangabe, ist das kein Grund fuer ok=false. Defekt ist nur, was das Inserat
+ausdruecklich als defekt oder nicht funktionierend beschreibt.
 Mehrere Stueck, Bundles oder Sets sind in Ordnung, solange das Gesuchte dabei ist.
 Im Zweifel ok=true: ein verpasstes Schnaeppchen ist schlimmer als ein Treffer zu viel.
 Antworte nur mit JSON."""

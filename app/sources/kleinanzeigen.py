@@ -1,8 +1,9 @@
 """Kleinanzeigen search-results source.
 
-Everything we need is on the result card, so we never fetch detail pages:
-id, url, title, description, price, PLZ + district, distance, posting time,
-image and the "Versand möglich" marker.
+Everything we need for matching is on the result card: id, url, title,
+description, price, PLZ + district, distance, posting time, image and the
+"Versand möglich" marker. Detail pages are fetched only by `ad_status`, to
+find out whether an ad we already showed has since been sold.
 
 Selector policy: Kleinanzeigen serves Tailwind utility classes, which churn.
 We anchor only on things that carry meaning -- the `data-adid`/`data-href`
@@ -155,3 +156,34 @@ def parse(page_html: str, now: float | None = None) -> list[dict]:
             "raw": None,
         })
     return out
+
+
+# --- is it still for sale? ---------------------------------------------------
+# A detail page comes in two layouts (Kleinanzeigen A/B-tests them, the same
+# URL alternates between fetches) and each states the status differently:
+#   new: <h1 ...><span ...>Reserviert •</span>Title</h1>   (also Gelöscht, Verkauft)
+#   old: showPausedVeil: true / showDeletedVeil: true in an inline script
+# An ad that is gone for good no longer has a page and redirects elsewhere.
+_STATUS_NEW = re.compile(r'<h1[^>]*>\s*<span[^>]*>\s*(Reserviert|Gelöscht|Verkauft)\s*•')
+_VEIL = re.compile(r'show(Paused|Deleted)Veil:\s*true')
+_PAGE_OK = re.compile(r'id="viewad-title"|itemprop="name" data-soldlabel')
+
+
+def ad_status(source_id: str, status_code: int, location: str | None, page_html: str) -> str | None:
+    """'active' | 'reserved' | 'gone', or None when the page cannot tell.
+
+    None is the answer for anything unexpected (a block page, a third layout):
+    a listing must never be hidden because we misread a page.
+    """
+    if status_code in (404, 410):
+        return "gone"
+    if status_code in (301, 302, 303, 307, 308):
+        # a changed slug redirects to the same ad; anything else means it is gone
+        return None if location and source_id in location else "gone"
+    if status_code != 200:
+        return None
+    if m := _STATUS_NEW.search(page_html):
+        return "reserved" if m.group(1) == "Reserviert" else "gone"
+    if m := _VEIL.search(page_html):
+        return "reserved" if m.group(1) == "Paused" else "gone"
+    return "active" if _PAGE_OK.search(page_html) else None

@@ -59,7 +59,9 @@ def status() -> dict:
                       (SELECT COUNT(*) FROM matches WHERE notified_at IS NULL
                          AND COALESCE(passed, 1) = 1) AS queued,
                       (SELECT COUNT(*) FROM matches WHERE passed = 0) AS filtered,
-                      (SELECT COUNT(*) FROM matches WHERE judged_at IS NULL) AS unjudged
+                      (SELECT COUNT(*) FROM matches WHERE judged_at IS NULL) AS unjudged,
+                      (SELECT COUNT(*) FROM listings WHERE status = 'gone') AS sold,
+                      (SELECT MAX(checked_at) FROM listings) AS last_recheck
                FROM listings""").fetchone()
         day = con.execute(
             "SELECT COUNT(*) AS n FROM listings WHERE first_seen_at > ?",
@@ -76,6 +78,8 @@ def status() -> dict:
         "queued": counts["queued"],
         "filtered": counts["filtered"],
         "unjudged": counts["unjudged"],
+        "sold": counts["sold"],
+        "last_recheck": counts["last_recheck"],
         "seen_24h": day["n"],
     }
 
@@ -102,7 +106,8 @@ def _conditions(search: int | None, verdict: str | None, shipping: str | None,
     /feed and /counts must agree or the tab numbers lie about what the tab
     contains, so both build their WHERE from here.
     """
-    where, params = ["1=1"], []
+    # sold or deleted on Kleinanzeigen (poller.recheck): never worth a click
+    where, params = ["COALESCE(l.status, '') != 'gone'"], []
     if show == "passed":
         where.append("COALESCE(m.passed, 1) = 1")
     elif show == "rejected":

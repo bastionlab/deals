@@ -80,6 +80,11 @@ intent: ein bis zwei deutsche Saetze, was WIRKLICH als Treffer zaehlt. Hier geho
 die Stichwoerter nicht ausdruecken koennen: Mindestgroessen ("mindestens 6 TB", "mindestens 27 Zoll"),
 erlaubte Modelle ("nur RTX 3060 oder RTX 3090"), ausgeschlossene Bauformen (keine Gehaeuse, keine Komplett-PCs).
 Zahlen immer als "mindestens N TB" oder "maximal N GB".
+Gewuenschte Farben, Groessen oder Varianten des Nutzers gehoeren immer in den intent.
+Schreibe NUR Bedingungen, die der Nutzer verlangt hat. Erfinde keine Produkteigenschaften
+("mit Display", "Smartwatch"), die du nicht sicher weisst: ein falscher Satz hier sortiert jedes
+echte Angebot aus. Eine genannte Modellnummer schliesst ihre Varianten ein ("3090" auch "3090 Ti"),
+ausser der Nutzer schliesst sie aus.
 
 note: ein kurzer deutscher Satz zu deinen Annahmen."""
 
