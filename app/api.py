@@ -99,6 +99,10 @@ def searches() -> list[dict]:
     return out
 
 
+SORTED_OUT_SQL = ("(COALESCE(m.passed, 1) = 0 OR COALESCE(l.status, '') = 'reserved'"
+                  " OR COALESCE(m.verdict, '') = 'down')")
+
+
 def _conditions(search: int | None, verdict: str | None, shipping: str | None,
                 show: str, hide_down: bool) -> tuple[list[str], list]:
     """The one place the feed view is defined.
@@ -108,10 +112,13 @@ def _conditions(search: int | None, verdict: str | None, shipping: str | None,
     """
     # sold or deleted on Kleinanzeigen (poller.recheck): never worth a click
     where, params = ["COALESCE(l.status, '') != 'gone'"], []
+    # "Aussortiert" = anything not worth looking at right now: the AI dropped
+    # it, the seller reserved it, or the user gave it a 👎. The default view
+    # hides all three; "all" brings them back.
     if show == "passed":
-        where.append("COALESCE(m.passed, 1) = 1")
+        where.append(f"NOT {SORTED_OUT_SQL}")
     elif show == "rejected":
-        where.append("m.passed = 0")
+        where.append(SORTED_OUT_SQL)
     if search:
         where.append("m.search_id = ?")
         params.append(search)
@@ -144,10 +151,16 @@ def counts(verdict: str | None = None, shipping: str | None = None,
             JOIN searches s ON s.id=m.search_id
             WHERE {' AND '.join(where)}
             GROUP BY m.search_id""", params).fetchall()
-        hidden = con.execute(
-            "SELECT COUNT(*) AS n FROM matches WHERE verdict='down'").fetchone()["n"]
+        # how many the current view is hiding, so the page can say so
+        out_where, out_params = _conditions(None, verdict, shipping, "rejected", False)
+        sorted_out = 0 if show == "all" else con.execute(f"""
+            SELECT COUNT(*) AS n
+            FROM matches m
+            JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
+            JOIN searches s ON s.id=m.search_id
+            WHERE {' AND '.join(out_where)}""", out_params).fetchone()["n"]
     per = {str(r["sid"]): r["n"] for r in rows}
-    return {"per_search": per, "total": sum(per.values()), "thumbed_down": hidden}
+    return {"per_search": per, "total": sum(per.values()), "sorted_out": sorted_out}
 
 
 @app.get("/feed", dependencies=[Depends(guard)])
