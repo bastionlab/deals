@@ -58,18 +58,14 @@ def caption(row) -> str:
     return "\n".join(lines)
 
 
-def inquiry(title: str) -> str:
-    """The first message to a seller; the dashboard's DealCard builds the same one."""
-    title = " ".join(title.split())
-    if len(title) > 120:  # Telegram caps copy_text at 256 chars
-        title = title[:119].rstrip() + "…"
-    return f"Hallo, ist „{title}“ noch verfügbar?"
+# the first message to a seller; the dashboard's DealCard copies the same text
+INQUIRY = "Hallo, ist es noch verfügbar?"
 
 
 async def send(client: httpx.AsyncClient, row) -> bool:
     text = caption(row)
     markup = {"inline_keyboard": [[
-        {"text": "💬 Nachricht kopieren", "copy_text": {"text": inquiry(row["title"])}},
+        {"text": "💬 Nachricht kopieren", "copy_text": {"text": INQUIRY}},
         {"text": "Anzeige öffnen ↗", "url": row["url"]},
     ]]}
     base = {"chat_id": TELEGRAM_CHAT_ID, "parse_mode": "HTML", "reply_markup": markup}
