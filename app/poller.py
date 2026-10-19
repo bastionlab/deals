@@ -24,6 +24,7 @@ from . import ai, db, filters, notify
 from .config import (BROWSER_HEADERS, EMPTY_PARSE_ALERT_AFTER, FETCH_JITTER,
                      FETCH_MIN_INTERVAL, HTTP_TIMEOUT, NEW_SELLER_DAYS)
 from .flats import poller as flats_poller
+from .jobs import poller as jobs_poller
 from .sources import kleinanzeigen as ka
 
 log = logging.getLogger("poller")
@@ -236,6 +237,8 @@ async def run() -> None:
     async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
         # same Kleinanzeigen, same limiter and backoff: flats must not double our footprint
         flats_task = asyncio.create_task(flats_poller.run(client, limiter, backoff))  # noqa: F841 -- kept alive
+        # job portals: other hosts, own limiters, own client
+        jobs_task = asyncio.create_task(jobs_poller.run())  # noqa: F841 -- kept alive
         while True:
             searches = db.active_searches()
             if not searches:

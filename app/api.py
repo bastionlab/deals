@@ -22,6 +22,8 @@ from . import ai, compose, db, filters
 from .config import NEARBY_KM, NEW_SELLER_DAYS
 from .flats import api as flats_api
 from .flats import db as flats_db
+from .jobs import api as jobs_api
+from .jobs import db as jobs_db
 from .sources import kleinanzeigen as ka
 
 TOKEN = os.environ.get("DEALS_API_TOKEN", "")
@@ -349,9 +351,11 @@ def feedback(body: Feedback) -> dict:
 
 
 app.include_router(flats_api.build(guard))
+app.include_router(jobs_api.build(guard))
 
 
 @app.on_event("startup")
 def _startup() -> None:
     db.init()
     flats_db.init()
+    jobs_db.init()
