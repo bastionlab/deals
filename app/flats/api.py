@@ -78,9 +78,15 @@ def build(guard) -> APIRouter:
         out.sort(key=lambda s: s["id"])
         return out
 
+    # 👍 flats live in their own list (/liked), under any search they were liked in
+    _LIKED = """EXISTS (SELECT 1 FROM flat_matches u WHERE u.source=f.source AND u.source_id=f.source_id
+                           AND u.verdict='up')"""
+
     def _where(search: int | None, show: str) -> tuple[list[str], list]:
         # the one definition of the feed; /feed and /counts both build from it
-        where, params = ["COALESCE(f.status, '') != 'gone'"], []
+        # a flat posted over a week ago is long promised to someone; the 👍 list keeps those
+        where, params = ["COALESCE(f.status, '') != 'gone'", f"NOT {_LIKED}",
+                         "COALESCE(f.posted_at, f.first_seen_at) >= ?"], [time.time() - fdb.MAX_AGE]
         sorted_out = "(m.passed = 0 OR COALESCE(f.status,'') = 'reserved' OR COALESCE(m.verdict,'') = 'down')"
         if show == "passed":
             where.append(f"NOT {sorted_out}")
@@ -109,6 +115,23 @@ def build(guard) -> APIRouter:
         for row in rows:
             d = fdb.decode(row)
             d.pop("description", None)          # the list never shows it; keeps the payload small
+            out.append(d)
+        return out
+
+    @r.get("/liked")
+    def liked() -> list[dict]:
+        """Every 👍 flat once, gone ones included: the user wants to see THAT it went."""
+        with fdb.connect() as con:
+            rows = con.execute(f"""
+                SELECT f.*, m.search_id, m.passed, m.reason, m.distance_km, m.verdict, m.matched_at,
+                       s.name AS search_name
+                {_JOIN} WHERE m.verdict = 'up'
+                GROUP BY f.source, f.source_id
+                ORDER BY COALESCE(f.status, '') = 'gone', COALESCE(f.posted_at, f.first_seen_at) DESC""").fetchall()
+        out = []
+        for row in rows:
+            d = fdb.decode(row)
+            d.pop("description", None)
             out.append(d)
         return out
 

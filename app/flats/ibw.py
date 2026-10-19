@@ -7,7 +7,9 @@ are separate numbers and WBS is an explicit field, so the model never sees
 these: they are proper listings by construction.
 
 Applying happens on the company's own site (degewo, Gewobag, ...), which the
-deeplink points at -- that is the contact channel.
+deeplink points at -- that is the contact channel. The finder keeps listing
+flats for days after the company took them down, so the deeplink is what
+says whether a flat is still there (see deeplink_status).
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ import html
 import json
 import re
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 BASE = "https://www.inberlinwohnen.de"
 SOURCE = "inberlinwohnen"
@@ -56,6 +59,14 @@ def _details(item: dict) -> dict[str, str]:
                 walk(x)
     walk(item.get("details"))
     return out
+
+
+def title_wbs(title: str | None) -> int | None:
+    """The WBS field is often "unbekannt" while the title says "mit WBS 160"."""
+    t = title or ""
+    if re.search(r"\b(ohne|kein\w*)\s+WBS\b", t, re.I):
+        return 0
+    return 1 if re.search(r"\bWBS\b", t, re.I) else None
 
 
 def parse(page_html: str) -> tuple[list[dict], int | None]:
@@ -115,7 +126,7 @@ def parse(page_html: str) -> tuple[list[dict], int | None]:
             "cold": cold, "extra": extra, "heating": heating,
             "warm": warm, "warm_kind": kind,
             "available_from": det.get("Bezugsfertig ab"),
-            "wbs": 0 if "nicht" in wbs else (1 if "erforderlich" in wbs else None),
+            "wbs": 0 if "nicht" in wbs else (1 if "erforderlich" in wbs else title_wbs(rec.get("title"))),
             "tausch": 0,
             "kind": "wohnung",
             "scam": "niedrig",
@@ -133,3 +144,18 @@ def parse(page_html: str) -> tuple[list[dict], int | None]:
             "status": "active",      # listed right now; a re-listed flat comes back from "gone"
         })
     return flats, total
+
+
+def deeplink_status(status_code: int, final_url: str) -> str | None:
+    """Company page after redirects -> gone | active | None (could not tell, change nothing).
+
+    Seen 2026-10-19 on flats the finder still listed: berlinovo answers 404,
+    GESOBAU 404 on `detailseite/-1`, HOWOGE redirects to `/404` with a 200.
+    degewo, Gewobag, STADT UND LAND and WBM showed no dead links at the time.
+    """
+    path = urlparse(final_url).path.rstrip("/")
+    if status_code in (404, 410) or path.endswith(("/404", "/-1")):
+        return "gone"
+    if status_code == 200:
+        return "active"
+    return None

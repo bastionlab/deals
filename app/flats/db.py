@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS flats (
     status        TEXT,                  -- active | reserved | gone
     checked_at    REAL,
     gone_at       REAL,
+    gone_why      TEXT,                  -- unlisted (portal dropped it) | deadlink (landlord page dead)
     PRIMARY KEY (source, source_id)
 );
 
@@ -98,6 +99,8 @@ _ALL = ("description", "lat", "lon", "address", "cold", "extra", "heating", "war
 def init() -> None:
     with connect() as con:
         con.executescript(SCHEMA)
+        if "gone_why" not in {r[1] for r in con.execute("PRAGMA table_info(flats)")}:
+            con.execute("ALTER TABLE flats ADD COLUMN gone_why TEXT")
         con.execute("DELETE FROM flat_matches WHERE search_id NOT IN (SELECT id FROM flat_searches)")
 
 
@@ -209,14 +212,15 @@ def mark_gone_except(source: str, alive: set[str]) -> int:
         rows = [r[0] for r in con.execute(
             "SELECT source_id FROM flats WHERE source=? AND COALESCE(status,'') != 'gone'", (source,))]
         dead = [i for i in rows if i not in alive]
-        con.executemany("UPDATE flats SET status='gone', gone_at=?, checked_at=? WHERE source=? AND source_id=?",
+        con.executemany("UPDATE flats SET status='gone', gone_why='unlisted', gone_at=?, checked_at=? "
+                        "WHERE source=? AND source_id=?",
                         [(now, now, source, i) for i in dead])
-        con.execute("UPDATE flats SET checked_at=? WHERE source=? AND COALESCE(status,'') != 'gone'",
-                    (now, source))
     return len(dead)
 
 
+MAX_AGE = 7 * 86400         # the feed hides flats posted longer ago than this
 RECHECK_AFTER = ((24 * 3600, 30 * 60), (7 * 86400, 3 * 3600), (float("inf"), 12 * 3600))
+RECHECK_LIKED = 10 * 60     # a 👍 flat is one the user may be about to apply for
 
 
 def due_rechecks(source: str, limit: int) -> list[dict]:
@@ -224,23 +228,35 @@ def due_rechecks(source: str, limit: int) -> list[dict]:
     now = time.time()
     with connect() as con:
         rows = con.execute(
-            """SELECT DISTINCT f.source, f.source_id, f.url, f.title, f.status, f.checked_at,
-                      COALESCE(f.posted_at, f.first_seen_at) AS born
+            """SELECT f.source, f.source_id, f.url, f.title, f.status, f.checked_at,
+                      COALESCE(f.posted_at, f.first_seen_at) AS born,
+                      MAX(COALESCE(m.verdict,'') = 'up') AS liked
                FROM flat_matches m JOIN flats f ON f.source=m.source AND f.source_id=m.source_id
-               JOIN flat_searches s ON s.id=m.search_id AND s.enabled=1
-               WHERE f.source=? AND m.passed=1 AND COALESCE(m.verdict,'') != 'down'
-                 AND COALESCE(f.status,'') != 'gone'""", (source,)).fetchall()
+               JOIN flat_searches s ON s.id=m.search_id
+               WHERE f.source=? AND COALESCE(f.status,'') != 'gone'
+                 AND (m.verdict = 'up' OR (s.enabled=1 AND m.passed=1 AND COALESCE(m.verdict,'') != 'down'))
+               GROUP BY f.source, f.source_id""", (source,)).fetchall()
     due = []
     for r in rows:
-        every = next(after for upto, after in RECHECK_AFTER if now - (r["born"] or now) < upto)
+        every = RECHECK_LIKED if r["liked"] else \
+            next(after for upto, after in RECHECK_AFTER if now - (r["born"] or now) < upto)
         overdue = now - (r["checked_at"] or 0) - every
+        if not r["liked"] and now - (r["born"] or now) > MAX_AGE:
+            continue                        # out of the feed: not worth a request
         if overdue >= 0:
             due.append((overdue, dict(r)))
     due.sort(key=lambda x: x[0], reverse=True)
     return [r for _, r in due[:limit]]
 
 
-def set_status(source: str, source_id: str, status: str | None) -> None:
+def dead_links(source: str) -> set[str]:
+    """Flats the landlord's own page says are gone -- the portal's list does not get to revive them."""
+    with connect() as con:
+        return {r[0] for r in con.execute(
+            "SELECT source_id FROM flats WHERE source=? AND gone_why='deadlink'", (source,))}
+
+
+def set_status(source: str, source_id: str, status: str | None, why: str | None = None) -> None:
     now = time.time()
     with connect() as con:
         if status is None:
@@ -249,9 +265,10 @@ def set_status(source: str, source_id: str, status: str | None) -> None:
         else:
             con.execute(
                 """UPDATE flats SET status=?, checked_at=?,
-                       gone_at=CASE WHEN ?='gone' THEN COALESCE(gone_at, ?) ELSE NULL END
+                       gone_at=CASE WHEN ?='gone' THEN COALESCE(gone_at, ?) ELSE NULL END,
+                       gone_why=CASE WHEN ?='gone' THEN ? ELSE NULL END
                    WHERE source=? AND source_id=?""",
-                (status, now, status, now, source, source_id))
+                (status, now, status, now, status, why, source, source_id))
 
 
 def setting(key: str, default: str = "") -> str:

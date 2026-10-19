@@ -1,12 +1,13 @@
 """Does a flat fit a search? Pure code, no model, no I/O.
 
 Three outcomes:
-- hard: outside what you asked for (area, size, rooms, budget, Tausch, WBS) -> not in the feed at all
+- hard: outside what you asked for (area, size, rooms, budget, Tausch, WBS), or no price
+        at all ("Preis auf Anfrage") -> not in the feed at all
 - soft: inside, but not worth looking at by default (a Gesuch, a WG room, a short let,
         a scam smell, or only an ESTIMATED warm rent over budget) -> "Aussortiert", one click away
 - ok
 
-Anything unknown passes: an ad that does not state its size must not vanish
+Anything unknown passes (except the price, see above): an ad that does not state its size must not vanish
 because of it. That is the same fail-open rule the deals judge follows.
 """
 from __future__ import annotations
@@ -51,6 +52,9 @@ def check(flat: dict, spec: dict) -> tuple[str, str | None, float | None]:
         return "hard", "WBS erforderlich", km
     if wbs == "only" and flat.get("wbs") != 1:
         return "hard", "kein WBS-Angebot", km
+
+    if not any(flat.get(k) for k in ("warm", "cold", "list_price")):
+        return "hard", "kein Preis angegeben", km
 
     budget = spec.get("max_warm")
     warm, how = flat.get("warm"), flat.get("warm_kind")

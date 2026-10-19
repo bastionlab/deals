@@ -2,13 +2,18 @@
 
 Per cycle:
 1. inberlinwohnen: newest pages until one holds nothing new (one site-wide
-   list, matched against every search locally). Every SWEEP_EVERY a full walk
+   list, matched against every search locally). Every SWEEP_EVERY (1 h) a full walk
    tells us which flats were taken down, since the portal has no per-flat
    "gone" state we could ask for.
 2. Kleinanzeigen, per search: page 1 (the first poll of a new search walks
    SEED_PAGES back so the feed starts with what is online now). Cards that
    could fit any search get one detail fetch and one model reading, ever.
-3. One due recheck of a KA flat in the feed (sold/deleted -> gone).
+3. One due recheck of a KA flat in the feed (sold/deleted -> gone); 👍 flats every 10 min.
+4. A few due rechecks of IBW flats in the feed against the company's own page,
+   which drops a flat days before the finder does.
+5. ImmoScout24, per search: newest pages until one holds nothing new (that is
+   also the seed), one exposé read + model reading per new flat that could fit,
+   then due exposé rechecks (404 -> gone).
 
 Every Kleinanzeigen request goes through the deals limiter and backoff.
 """
@@ -22,7 +27,7 @@ import httpx
 
 from ..config import HTTP_TIMEOUT
 from . import db as fdb
-from . import extract, geo, ibw, ka, match
+from . import extract, geo, ibw, is24, ka, match
 
 log = logging.getLogger("flats")
 
@@ -31,7 +36,13 @@ SEED_PAGES = 3
 MAX_DETAILS_PER_POLL = 40
 IBW_INTERVAL = 6.0          # their own limiter: a different site
 IBW_MAX_PAGES = 60
-SWEEP_EVERY = 6 * 3600
+SWEEP_EVERY = 3600         # the only way to learn an IBW flat is gone; ~45 pages
+IBW_RECHECKS = 4            # per cycle; each is one request to a company site
+IS24_INTERVAL = 8.0         # unofficial app API: slow and steady
+IS24_MAX_PAGES = 4          # 50 flats a page, newest first
+IS24_MAX_DETAILS = 20
+IS24_RECHECKS = 3
+IS24_PORTAL = {"type": "immoscout24", "label": "ImmoScout-Nachricht", "how": "Kontaktformular auf ImmoScout24"}
 BERLIN = (52.52, 13.405)
 BERLIN_REACH_KM = 25
 
@@ -59,7 +70,7 @@ def rematch(search: dict) -> dict:
         before = {(r[0], r[1]) for r in con.execute(
             "SELECT source, source_id FROM flat_matches WHERE search_id=?", (search["id"],))}
     for f in fdb.all_flats():
-        if f["source"] == ka.SOURCE and not f.get("detail_at"):
+        if f["source"] != ibw.SOURCE and not f.get("detail_at"):
             continue                          # card only: never read, so nothing to show yet
         res = match.check(f, search["spec"])
         fdb.set_match(search["id"], f["source"], f["source_id"], res)
@@ -75,6 +86,7 @@ def rematch(search: dict) -> dict:
 
 async def poll_ibw(client: httpx.AsyncClient, limiter, searches: list[dict], state: dict) -> None:
     known = fdb.known_ids(ibw.SOURCE)
+    dead = fdb.dead_links(ibw.SOURCE)
     sweep = not known or time.time() - state.get("ibw_sweep", 0) > SWEEP_EVERY
     seen: set[str] = set()
     new: set[str] = set()          # pages overlap by an item, so count ids, not rows
@@ -98,6 +110,8 @@ async def poll_ibw(client: httpx.AsyncClient, limiter, searches: list[dict], sta
         fresh = [f for f in flats if f["source_id"] not in known]
         for f in flats:
             seen.add(f["source_id"])
+            if f["source_id"] in dead:
+                f.pop("status")                 # listed, but the company page is gone: stays gone
             fdb.upsert(f)
             if f["source_id"] not in known:
                 match_everywhere(f, searches)
@@ -206,10 +220,101 @@ async def recheck_ka(client, limiter, backoff) -> None:
                      row["title"][:60])
 
 
+async def recheck_ibw(client, limiter) -> None:
+    for row in fdb.due_rechecks(ibw.SOURCE, IBW_RECHECKS):
+        await limiter.wait()
+        try:
+            r = await client.get(row["url"], timeout=HTTP_TIMEOUT, follow_redirects=True)
+        except httpx.HTTPError as exc:
+            log.warning("ibw recheck %s: %s", row["source_id"], exc)
+            fdb.set_status(row["source"], row["source_id"], None)
+            continue
+        status = ibw.deeplink_status(r.status_code, str(r.url))
+        fdb.set_status(row["source"], row["source_id"], status, "deadlink" if status == "gone" else None)
+        if status == "gone":
+            log.info("ibw recheck %s: dead link (%s %s) | %s", row["source_id"], r.status_code, r.url,
+                     row["title"][:60])
+
+
+# --- ImmoScout24 -------------------------------------------------------------
+
+async def _is24(client, limiter, method: str, url: str) -> httpx.Response | None:
+    await limiter.wait()
+    try:
+        return await client.request(method, url, headers=is24.HEADERS, timeout=HTTP_TIMEOUT,
+                                    json=is24.SEARCH_BODY if method == "POST" else None)
+    except httpx.HTTPError as exc:
+        log.warning("is24 %s: %s", url[:90], exc)
+        return None
+
+
+async def poll_is24(client, limiter, search: dict, searches: list[dict]) -> None:
+    known = fdb.known_ids(is24.SOURCE)
+    seen = read = fits = 0
+    for page in range(1, IS24_MAX_PAGES + 1):
+        url = is24.search_url(search["spec"], page)
+        if not url:
+            return
+        r = await _is24(client, limiter, "POST", url)
+        if r is None or r.status_code != 200:
+            log.warning("[%s] is24 page %d: http %s", search["name"], page, r.status_code if r is not None else "error")
+            return
+        cards, pages = is24.parse_list(r.json())
+        seen += len(cards)
+        fresh = 0
+        for card in cards:
+            have = fdb.get(card["source"], card["source_id"])
+            if have and have.get("detail_at"):
+                # a re-sighting refreshes the card, never what the exposé said
+                fdb.upsert({k: v for k, v in card.items() if k not in ("address", "lat", "lon", "commercial")})
+                continue
+            fresh += card["source_id"] not in known
+            if not any(match.card_could_match(card, s["spec"]) for s in searches):
+                if not have:
+                    fdb.upsert(card)
+                continue
+            if read >= IS24_MAX_DETAILS:
+                continue                        # next poll picks it up
+            read += 1
+            flat = await read_is24(client, limiter, card)
+            if not flat:
+                continue
+            fdb.upsert(flat)
+            fits += match_everywhere(flat, searches) > 0
+        if not fresh or not pages or page >= pages:
+            break                               # newest first: a page with nothing new ends the walk
+    if read:
+        log.info("[%s] is24 %d cards, %d read, %d fit a search", search["name"], seen, read, fits)
+
+
+async def read_is24(client, limiter, card: dict) -> dict | None:
+    r = await _is24(client, limiter, "GET", is24.api_expose(card["source_id"]))
+    if r is None or r.status_code != 200:
+        return None
+    detail = is24.parse_expose(r.json())
+    if not detail:
+        log.warning("is24 expose %s: unreadable", card["source_id"])
+        return None
+    merged = {**card, **{k: v for k, v in detail.items() if v is not None}}
+    reading = await extract.read_ad(client, merged)
+    return extract.enrich(card, detail, reading, time.time(), IS24_PORTAL)
+
+
+async def recheck_is24(client, limiter) -> None:
+    for row in fdb.due_rechecks(is24.SOURCE, IS24_RECHECKS):
+        r = await _is24(client, limiter, "GET", is24.api_expose(row["source_id"]))
+        status = None if r is None else ("gone" if r.status_code in (404, 410)
+                                         else "active" if r.status_code == 200 else None)
+        fdb.set_status(row["source"], row["source_id"], status)
+        if status == "gone":
+            log.info("is24 recheck %s: gone | %s", row["source_id"], row["title"][:60])
+
+
 async def run(client: httpx.AsyncClient, ka_limiter, backoff) -> None:
     fdb.init()
     # same limiter class as the deals poller, separate instance: another site, another budget
     ibw_limiter = type(ka_limiter)(IBW_INTERVAL, 0.4)
+    is24_limiter = type(ka_limiter)(IS24_INTERVAL, 0.4)
     state: dict = {}
     log.info("flat hunter up")
     while True:
@@ -219,12 +324,18 @@ async def run(client: httpx.AsyncClient, ka_limiter, backoff) -> None:
             if searches:
                 if any(touches_berlin(s["spec"]) for s in searches):
                     await poll_ibw(client, ibw_limiter, searches, state)
+                    await recheck_ibw(client, ibw_limiter)
                 for s in searches:
                     try:
                         await poll_ka(client, ka_limiter, backoff, s, searches)
                     except Exception:
                         log.exception("[%s] flat poll failed", s["name"])
                     await recheck_ka(client, ka_limiter, backoff)
+                    try:
+                        await poll_is24(client, is24_limiter, s, searches)
+                    except Exception:
+                        log.exception("[%s] is24 poll failed", s["name"])
+                await recheck_is24(client, is24_limiter)
         except Exception:
             log.exception("flat cycle failed")
         await asyncio.sleep(max(10.0, CYCLE - (time.monotonic() - started)))

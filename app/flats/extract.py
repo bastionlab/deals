@@ -79,7 +79,7 @@ betrug: Wie wahrscheinlich ist das ein Betrugsinserat?
 
 kontakt: in hoechstens 12 Woertern, WIE man sich laut Inserat bewerben soll, z.B.
 "Nachricht über Kleinanzeigen mit Selbstauskunft", "E-Mail an den Vermieter", "Anruf ab 18 Uhr".
-Steht nichts dazu: "Nachricht über Kleinanzeigen".
+Steht nichts dazu: "".
 kontakt_name: Name des Ansprechpartners, wenn genannt, sonst "".
 notiz: hoechstens 10 Woerter, was man vor einer Bewerbung wissen sollte (z.B. "befristet 1 Jahr, 1.900 € Abstand").
 Antworte nur mit JSON."""
@@ -180,8 +180,14 @@ def rent(flat: dict, reading: dict | None) -> dict:
             "warm": round(warm, 2) if warm else None, "warm_kind": kind}
 
 
-def enrich(flat: dict, detail: dict, reading: dict | None, now: float) -> dict:
-    """Merge card + detail page + model reading into the stored row."""
+KA_PORTAL = {"type": "kleinanzeigen", "label": "Kleinanzeigen-Nachricht", "how": "Nachricht über Kleinanzeigen"}
+
+
+def enrich(flat: dict, detail: dict, reading: dict | None, now: float, portal: dict = KA_PORTAL) -> dict:
+    """Merge card + detail page + model reading into the stored row.
+
+    portal = the site's own message channel: {type, label, how (the default when the ad says nothing)}.
+    """
     flat = {**flat, **{k: v for k, v in detail.items() if v is not None or k in ("cold", "extra", "heating")}}
     r = reading or {}
     money = rent(flat, reading)
@@ -196,8 +202,11 @@ def enrich(flat: dict, detail: dict, reading: dict | None, now: float) -> dict:
     channels += [c for c in contacts("\n".join(x for x in (flat.get("title"), flat.get("description"),
                                                          detail.get("imprint")) if x))
                  if c not in channels]
-    channels.append({"type": "kleinanzeigen", "value": flat["url"], "label": "Kleinanzeigen-Nachricht"})
-    wbs = {"ja": 1, "nein": 0}.get(r.get("wbs"))
+    channels.append({"type": portal["type"], "value": flat["url"], "label": portal["label"]})
+    wbs = detail.get("wbs_attr") or {"ja": 1, "nein": 0}.get(r.get("wbs"))
+    how = (r.get("kontakt") or "").strip()[:140] or portal["how"]
+    if detail.get("premium_only"):
+        how = "nur mit ImmoScout Plus: " + how
     return {
         **{k: flat.get(k) for k in ("source", "source_id", "url", "title", "image_url", "posted_at",
                                      "postal_code", "district", "area", "rooms", "list_price",
@@ -210,8 +219,8 @@ def enrich(flat: dict, detail: dict, reading: dict | None, now: float) -> dict:
         "scam": r.get("betrug"),
         "ai_note": (r.get("notiz") or "").strip()[:140] or None,
         "contact": {
-            "how": (r.get("kontakt") or "").strip()[:140] or "Nachricht über Kleinanzeigen",
-            "name": (r.get("kontakt_name") or "").strip()[:80] or flat.get("seller"),
+            "how": how,
+            "name": (r.get("kontakt_name") or "").strip()[:80] or detail.get("contact_name") or flat.get("seller"),
             "channels": channels,
         },
         "detail_at": now,
