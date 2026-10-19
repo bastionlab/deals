@@ -4,7 +4,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .config import DB_PATH
+from .config import DB_PATH, NEW_SELLER_DAYS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS searches (
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS listings (
     status        TEXT,              -- active | reserved | gone; NULL = never rechecked
     checked_at    REAL,              -- last detail-page recheck
     gone_at       REAL,
+    seller_since  REAL,              -- seller's "Aktiv seit" day; NULL = not read yet
     raw           TEXT,
     PRIMARY KEY (source, source_id)
 );
@@ -82,6 +83,7 @@ MIGRATIONS = {
         "status": "ALTER TABLE listings ADD COLUMN status TEXT",
         "checked_at": "ALTER TABLE listings ADD COLUMN checked_at REAL",
         "gone_at": "ALTER TABLE listings ADD COLUMN gone_at REAL",
+        "seller_since": "ALTER TABLE listings ADD COLUMN seller_since REAL",
     },
 }
 
@@ -240,15 +242,19 @@ def all_matched(search_id: int, limit: int = 500) -> list[sqlite3.Row]:
             (search_id, limit)).fetchall()
 
 
+# Python twin: sources.kleinanzeigen.is_new_seller -- change both together.
+NEW_SELLER_SQL = f"(l.seller_since IS NOT NULL AND l.seller_since > l.first_seen_at - {NEW_SELLER_DAYS} * 86400)"
+
+
 def pending_notifications(limit: int = 20) -> list[sqlite3.Row]:
     with connect() as con:
         return con.execute(
-            """SELECT m.search_id, m.source, m.source_id, s.name AS search_name, l.*
+            f"""SELECT m.search_id, m.source, m.source_id, s.name AS search_name, l.*
                FROM matches m
                JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
                JOIN searches s ON s.id=m.search_id
                WHERE m.notified_at IS NULL AND COALESCE(m.passed, 1) = 1
-                 AND COALESCE(l.status, '') != 'gone'
+                 AND COALESCE(l.status, '') != 'gone' AND NOT {NEW_SELLER_SQL}
                  AND m.matched_at > strftime('%s','now') - 86400   -- no stale flood after an outage
                ORDER BY l.posted_at DESC NULLS LAST, l.first_seen_at DESC
                LIMIT ?""",
@@ -332,3 +338,17 @@ def set_status(source: str, source_id: str, status: str | None) -> str | None:
                    WHERE source=? AND source_id=?""",
                 (status, now, status, now, source, source_id))
     return prev
+
+
+def set_seller_since(source: str, source_id: str, since: float | None) -> None:
+    if since is None:
+        return
+    with connect() as con:
+        con.execute("UPDATE listings SET seller_since=? WHERE source=? AND source_id=?",
+                    (since, source, source_id))
+
+
+def get_listing(source: str, source_id: str) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute("SELECT * FROM listings WHERE source=? AND source_id=?",
+                           (source, source_id)).fetchone()

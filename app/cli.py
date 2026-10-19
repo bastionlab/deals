@@ -120,17 +120,18 @@ def cmd_testsend(args):
 
 def cmd_poll(args):
     """One pass over every enabled search, then exit."""
-    from .poller import Backoff, HEADERS, flush, poll_search
+    from .poller import Backoff, HEADERS, RateLimiter, flush, poll_search
     import logging
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     async def go():
         db.init()
         backoff = Backoff()
+        limiter = RateLimiter(2.0, 0.2)
         async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
             for row in db.active_searches():
                 for kw in ka.keywords(json.loads(row["spec"] or "{}")):
-                    await poll_search(client, row, backoff, kw)
+                    await poll_search(client, row, limiter, backoff, kw)
                     if not args.quiet:
                         await flush(client)
                     await asyncio.sleep(2)

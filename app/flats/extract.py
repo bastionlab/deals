@@ -212,6 +212,8 @@ def enrich(flat: dict, detail: dict, reading: dict | None, now: float, portal: d
                                      "postal_code", "district", "area", "rooms", "list_price",
                                      "description", "lat", "lon", "address", "deposit",
                                      "available_from", "seller", "commercial", "attrs")},
+        # only when the page said so: a None here would wipe a known age on upsert
+        **({"seller_since": detail["seller_since"]} if detail.get("seller_since") else {}),
         **money,
         "wbs": wbs,
         "tausch": tausch,

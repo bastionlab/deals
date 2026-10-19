@@ -174,6 +174,13 @@ def _facts(kv: dict, desc: str, lat, lon, address: str, seller, commercial, **ex
 
 def parse_detail(page_html: str) -> dict | None:
     """Detail page (either layout) -> the richer half of a flat. None if it is not an ad page."""
+    out = _parse_detail(page_html)
+    if out is not None:
+        out["seller_since"] = ka.seller_since(page_html)
+    return out
+
+
+def _parse_detail(page_html: str) -> dict | None:
     if ad := _astro_ad(page_html):
         return _detail_from_astro(ad)
     d = _DESC.search(page_html)

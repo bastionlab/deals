@@ -19,7 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import ai, compose, db, filters
-from .config import NEARBY_KM
+from .config import NEARBY_KM, NEW_SELLER_DAYS
 from .flats import api as flats_api
 from .flats import db as flats_db
 from .sources import kleinanzeigen as ka
@@ -48,6 +48,7 @@ def _row(r) -> dict:
     d = dict(r)
     d["price_eur"] = None if d.get("price_cents") is None else d["price_cents"] / 100
     d["shipped"] = filters.is_shipped(d)
+    d["new_seller"] = ka.is_new_seller(d.get("seller_since"), d.get("first_seen_at"), NEW_SELLER_DAYS)
     return d
 
 
@@ -102,7 +103,7 @@ def searches() -> list[dict]:
 
 
 SORTED_OUT_SQL = ("(COALESCE(m.passed, 1) = 0 OR COALESCE(l.status, '') = 'reserved'"
-                  " OR COALESCE(m.verdict, '') = 'down')")
+                  f" OR COALESCE(m.verdict, '') = 'down' OR {db.NEW_SELLER_SQL})")
 
 
 def _conditions(search: int | None, verdict: str | None, shipping: str | None,

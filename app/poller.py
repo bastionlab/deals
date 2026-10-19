@@ -22,7 +22,7 @@ import httpx
 
 from . import ai, db, filters, notify
 from .config import (BROWSER_HEADERS, EMPTY_PARSE_ALERT_AFTER, FETCH_JITTER,
-                     FETCH_MIN_INTERVAL, HTTP_TIMEOUT)
+                     FETCH_MIN_INTERVAL, HTTP_TIMEOUT, NEW_SELLER_DAYS)
 from .flats import poller as flats_poller
 from .sources import kleinanzeigen as ka
 
@@ -83,7 +83,7 @@ def _is_fresh(ad: dict, max_seen_id: int, now: float) -> bool:
     return int(ad["source_id"]) > max_seen_id
 
 
-async def poll_search(client: httpx.AsyncClient, row, backoff: Backoff,
+async def poll_search(client: httpx.AsyncClient, row, limiter: RateLimiter, backoff: Backoff,
                       keyword: str | None = None) -> int:
     """Fetch page 1 of one search keyword. Returns the number of listings queued for push."""
     spec = json.loads(row["spec"] or "{}")
@@ -142,7 +142,7 @@ async def poll_search(client: httpx.AsyncClient, row, backoff: Backoff,
     min_score = int(spec.get("min_score") or ai.DEFAULT_MIN_SCORE)
     verdicts = await ai.judge(client, intent, [a for a, _ in candidates]) if candidates else {}
 
-    queued = rejected = 0
+    queued = rejected = suspicious = 0
     for ad, is_new in candidates:
         v = verdicts.get(ad["source_id"])
         ok = ai.passes(v, min_score)
@@ -152,14 +152,54 @@ async def poll_search(client: httpx.AsyncClient, row, backoff: Backoff,
             db.mark_notified(row["id"], ad["source"], ad["source_id"])   # filtered, stay quiet
             rejected += 1
         elif is_new:
-            queued += 1
+            # one ad-page read before anything is pushed: phishers post from fresh accounts
+            await open_ad(client, limiter, backoff, ad["source"], ad["source_id"], ad["url"])
+            li = db.get_listing(ad["source"], ad["source_id"])
+            if li and ka.is_new_seller(li["seller_since"], li["first_seen_at"], NEW_SELLER_DAYS):
+                db.mark_notified(row["id"], ad["source"], ad["source_id"])
+                suspicious += 1
+                log.warning("[%s] new seller account (%s) -> aussortiert | %s", row["name"],
+                            time.strftime("%d.%m.%Y", time.localtime(li["seller_since"])), ad["title"][:60])
+            else:
+                queued += 1
         else:
             db.mark_notified(row["id"], ad["source"], ad["source_id"])   # backfill, stay quiet
 
     db.update_search_state(row["id"], max_seen_id=max_id)
-    log.info("[%s|%s] %d ads, %d new to push, %d filtered by AI%s", row["name"], keyword or "",
-             len(ads), queued, rejected, " (seeded)" if seeding else "")
+    log.info("[%s|%s] %d ads, %d new to push, %d filtered by AI, %d new sellers%s", row["name"],
+             keyword or "", len(ads), queued, rejected, suspicious, " (seeded)" if seeding else "")
     return queued
+
+
+async def open_ad(client: httpx.AsyncClient, limiter: RateLimiter, backoff: Backoff,
+                  source: str, source_id: str, url: str) -> str | None:
+    """Open one ad page, record its status and the seller's account age.
+    Returns the status, None when the page could not tell (or the fetch failed)."""
+    await limiter.wait()
+    if (pen := backoff.penalty()):
+        await asyncio.sleep(pen)
+    try:
+        resp = await client.get(url, timeout=HTTP_TIMEOUT, follow_redirects=False)
+        loc = resp.headers.get("location")
+        if resp.is_redirect and loc and source_id in loc:   # slug changed, same ad
+            resp = await client.get(resp.next_request.url, timeout=HTTP_TIMEOUT,
+                                    follow_redirects=False)
+            loc = resp.headers.get("location")
+    except httpx.HTTPError as exc:
+        log.warning("open %s failed: %s", source_id, exc)
+        return None
+    if resp.status_code in (403, 429):
+        backoff.hit()
+        return None
+    status = ka.ad_status(source_id, resp.status_code, loc, resp.text)
+    prev = db.set_status(source, source_id, status)
+    if status is None:
+        log.warning("open %s: unreadable page (http %s)", source_id, resp.status_code)
+    elif status != (prev or "active"):
+        log.info("recheck %s: %s -> %s", source_id, prev or "active", status)
+    if resp.status_code == 200:
+        db.set_seller_since(source, source_id, ka.seller_since(resp.text))
+    return status
 
 
 async def recheck(client: httpx.AsyncClient, limiter: RateLimiter, backoff: Backoff,
@@ -170,30 +210,7 @@ async def recheck(client: httpx.AsyncClient, limiter: RateLimiter, backoff: Back
     because the search page simply stops listing them and nothing told us.
     """
     for row in db.due_rechecks(limit):
-        await limiter.wait()
-        if (pen := backoff.penalty()):
-            await asyncio.sleep(pen)
-        url = row["url"]
-        try:
-            resp = await client.get(url, timeout=HTTP_TIMEOUT, follow_redirects=False)
-            loc = resp.headers.get("location")
-            if resp.is_redirect and loc and row["source_id"] in loc:   # slug changed, same ad
-                resp = await client.get(resp.next_request.url, timeout=HTTP_TIMEOUT,
-                                        follow_redirects=False)
-                loc = resp.headers.get("location")
-        except httpx.HTTPError as exc:
-            log.warning("recheck %s failed: %s", row["source_id"], exc)
-            return
-        if resp.status_code in (403, 429):
-            backoff.hit()
-            return
-        status = ka.ad_status(row["source_id"], resp.status_code, loc, resp.text)
-        prev = db.set_status(row["source"], row["source_id"], status)
-        if status is None:
-            log.warning("recheck %s: unreadable page (http %s)", row["source_id"], resp.status_code)
-        elif status != (prev or "active"):
-            log.info("recheck %s: %s -> %s | %s", row["source_id"], prev or "active", status,
-                     row["title"][:60])
+        await open_ad(client, limiter, backoff, row["source"], row["source_id"], row["url"])
 
 
 async def flush(client: httpx.AsyncClient) -> None:
@@ -231,7 +248,7 @@ async def run() -> None:
                         log.info("backing off %.0fs", pen)
                         await asyncio.sleep(pen)
                     try:
-                        await poll_search(client, row, backoff, kw)
+                        await poll_search(client, row, limiter, backoff, kw)
                     except Exception:
                         log.exception("[%s] unexpected error", row["name"])
                     await flush(client)

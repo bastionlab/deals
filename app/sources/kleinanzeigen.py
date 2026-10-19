@@ -187,3 +187,28 @@ def ad_status(source_id: str, status_code: int, location: str | None, page_html:
     if m := _VEIL.search(page_html):
         return "reserved" if m.group(1) == "Paused" else "gone"
     return "active" if _PAGE_OK.search(page_html) else None
+
+
+# --- who is selling? ---------------------------------------------------------
+# Phishing ads come from accounts made a day or two earlier. Both detail layouts
+# state the account's age: old "Aktiv seit 12.03.2021", new userDetails.userSince
+# (and the same "Aktiv seit <!-- -->12.03.2021" in its rendered HTML).
+_SINCE = re.compile(r'Aktiv seit\s*(?:<!--\s*-->)?\s*(\d{2}\.\d{2}\.\d{4})'
+                    r'|userSince&quot;:\[0,&quot;(\d{2}\.\d{2}\.\d{4})')
+
+
+def seller_since(page_html: str) -> float | None:
+    """Epoch of the seller's 'Aktiv seit' day, None when the page does not say."""
+    m = _SINCE.search(page_html)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1) or m.group(2), "%d.%m.%Y").timestamp()
+    except ValueError:
+        return None
+
+
+def is_new_seller(since: float | None, seen_at: float | None, days: float) -> bool:
+    """Account younger than `days` when we first saw the ad. Unknown age is not suspicious.
+    SQL twin: db.NEW_SELLER_SQL -- change both together."""
+    return since is not None and since > (seen_at or time.time()) - days * 86400

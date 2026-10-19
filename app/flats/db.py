@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS flats (
     checked_at    REAL,
     gone_at       REAL,
     gone_why      TEXT,                  -- unlisted (portal dropped it) | deadlink (landlord page dead)
+    seller_since  REAL,                  -- KA seller's "Aktiv seit" day; NULL = unknown
     PRIMARY KEY (source, source_id)
 );
 
@@ -93,14 +94,16 @@ _CARD = ("url", "title", "image_url", "posted_at", "postal_code", "district", "a
          "list_price")
 _ALL = ("description", "lat", "lon", "address", "cold", "extra", "heating", "warm", "warm_kind",
         "deposit", "available_from", "wbs", "tausch", "kind", "scam", "ai_note", "seller",
-        "commercial", "contact", "attrs", "detail_at", "judged_at", "status")
+        "commercial", "contact", "attrs", "detail_at", "judged_at", "status", "seller_since")
 
 
 def init() -> None:
     with connect() as con:
         con.executescript(SCHEMA)
-        if "gone_why" not in {r[1] for r in con.execute("PRAGMA table_info(flats)")}:
-            con.execute("ALTER TABLE flats ADD COLUMN gone_why TEXT")
+        have = {r[1] for r in con.execute("PRAGMA table_info(flats)")}
+        for col in ("gone_why TEXT", "seller_since REAL"):
+            if col.split()[0] not in have:
+                con.execute(f"ALTER TABLE flats ADD COLUMN {col}")
         con.execute("DELETE FROM flat_matches WHERE search_id NOT IN (SELECT id FROM flat_searches)")
 
 
@@ -302,3 +305,11 @@ def save_message(source: str, source_id: str, profile_hash: str, text: str, miss
                ON CONFLICT DO UPDATE SET profile_hash=excluded.profile_hash, text=excluded.text,
                                          missing=excluded.missing, created_at=excluded.created_at""",
             (source, source_id, profile_hash, text, json.dumps(missing, ensure_ascii=False), time.time()))
+
+
+def set_seller_since(source: str, source_id: str, since: float | None) -> None:
+    if since is None:
+        return
+    with connect() as con:
+        con.execute("UPDATE flats SET seller_since=? WHERE source=? AND source_id=?",
+                    (since, source, source_id))

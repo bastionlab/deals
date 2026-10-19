@@ -28,6 +28,11 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 # Plenty of nearby sellers tick "Versand moeglich" as well. Below this distance
 # you would just go and get it, so a listing only counts as shipped beyond it.
 NEARBY_KM = float(os.environ.get("DEALS_NEARBY_KM", "15"))
+# A seller account younger than this when we first see the ad = phishing suspect:
+# never pushed, shown only under "Aussortierte" (deals and flats alike).
+NEW_SELLER_DAYS = float(os.environ.get("DEALS_NEW_SELLER_DAYS", "3"))
+# flat scams run from accounts a few weeks old, not days (seen: 12 days, 700 € furnished at Potsdamer Platz)
+FLAT_NEW_SELLER_DAYS = float(os.environ.get("DEALS_FLAT_NEW_SELLER_DAYS", "30"))
 
 # A fetch that returns HTTP 200 but no ads means the markup changed under us.
 # After this many in a row we alert instead of failing silently.

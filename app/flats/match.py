@@ -12,7 +12,21 @@ because of it. That is the same fail-open rule the deals judge follows.
 """
 from __future__ import annotations
 
+import re
+import time
+
+from ..config import FLAT_NEW_SELLER_DAYS
+from ..sources import kleinanzeigen as ka
 from . import geo
+
+# Warm rent per m² below which a market flat is bait. Berlin 2026: inberlinwohnen's
+# p1 is 11 €/m², ImmoScout's 10.7; below 9.5 only Tausch ads (old contracts) are real.
+# Furnished flats rent higher, so a cheap furnished one is the classic scam
+# (seen: 11.3 €/m² at Potsdamer Platz = scam; real private sublets at 12.1 and 13).
+FLOOR_PER_M2 = 9.5
+FLOOR_PER_M2_FURNISHED = 12.0
+_FURNISHED = re.compile(r"(?<!un)(?<!teil)(?<!teil-)möbliert|furnished", re.I)
+_UNFURNISHED = re.compile(r"unmöbliert|unfurnished", re.I)
 
 TEMPORARY = {"wg_zimmer": "nur ein WG-Zimmer", "zwischenmiete": "Zwischenmiete / befristet"}
 NOT_AN_OFFER = {"gesuch": "Gesuch, kein Angebot", "sonstiges": "kein Wohnungsangebot"}
@@ -71,11 +85,39 @@ def check(flat: dict, spec: dict) -> tuple[str, str | None, float | None]:
         return "soft", NOT_AN_OFFER[kind], km
     if kind in TEMPORARY and not spec.get("allow_temporary"):
         return "soft", TEMPORARY[kind], km
+    seen = flat.get("first_seen_at") or flat.get("detail_at")
+    if ka.is_new_seller(flat.get("seller_since"), seen, FLAT_NEW_SELLER_DAYS):
+        return "soft", "Konto erst seit " + time.strftime("%d.%m.%Y", time.localtime(flat["seller_since"])) + \
+            " aktiv: Phishing-Verdacht", km
+    if (bait := too_cheap(flat)):
+        return "soft", f"Betrugsverdacht: {bait}", km
     if flat.get("scam") == "hoch":
         return "soft", "Betrugsverdacht" + (f": {flat['ai_note']}" if flat.get("ai_note") else ""), km
     if budget and warm is not None and how == "estimated" and warm > budget:
         return "soft", f"geschätzt {_eur(warm)} warm > {_eur(budget)}", km
     return "ok", None, km
+
+
+def too_cheap(flat: dict) -> str | None:
+    """Reason text if the rent is too low to be a real market offer, else None.
+
+    Exempt: state-owned (inberlinwohnen), WBS flats and Tausch ads, which are
+    legitimately cheap; estimated rents, which may simply be wrong; WG rooms,
+    whose m² is the whole flat's.
+    """
+    warm, area = flat.get("warm"), flat.get("area")
+    if not warm or not area or area < 15 or flat.get("warm_kind") not in ("stated", "sum"):
+        return None
+    if flat.get("source") == "inberlinwohnen" or flat.get("wbs") == 1 or flat.get("tausch") == 1 \
+            or flat.get("kind") == "wg_zimmer":
+        return None
+    text = f"{flat.get('title') or ''} {flat.get('description') or ''}"
+    furnished = bool(_FURNISHED.search(text)) and not _UNFURNISHED.search(flat.get("title") or "")
+    floor = FLOOR_PER_M2_FURNISHED if furnished else FLOOR_PER_M2
+    per = warm / area
+    if per >= floor:
+        return None
+    return f"{per:.1f} €/m² warm{' möbliert' if furnished else ''} ist unrealistisch billig"
 
 
 def card_could_match(card: dict, spec: dict) -> bool:

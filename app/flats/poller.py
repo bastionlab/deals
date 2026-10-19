@@ -26,6 +26,7 @@ import time
 import httpx
 
 from ..config import HTTP_TIMEOUT
+from ..sources import kleinanzeigen
 from . import db as fdb
 from . import extract, geo, ibw, is24, ka, match
 
@@ -218,6 +219,12 @@ async def recheck_ka(client, limiter, backoff) -> None:
         if status and status != (row["status"] or "active"):
             log.info("recheck %s: %s -> %s | %s", row["source_id"], row["status"] or "active", status,
                      row["title"][:60])
+        if r.status_code == 200 and (since := kleinanzeigen.seller_since(r.text)):
+            # flats read before the account-age rule learn it here, and drop out if fresh
+            flat = fdb.get(row["source"], row["source_id"])
+            if flat and flat.get("seller_since") != since:
+                fdb.set_seller_since(row["source"], row["source_id"], since)
+                match_everywhere({**flat, "seller_since": since}, fdb.searches(enabled_only=True))
 
 
 async def recheck_ibw(client, limiter) -> None:
