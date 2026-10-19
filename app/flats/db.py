@@ -69,6 +69,22 @@ CREATE TABLE IF NOT EXISTS flat_matches (
     PRIMARY KEY (search_id, source, source_id)
 );
 CREATE INDEX IF NOT EXISTS idx_flats_seen ON flats(first_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS flat_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- one drafted message per flat; profile_hash says which profile it was written from
+CREATE TABLE IF NOT EXISTS flat_messages (
+    source       TEXT NOT NULL,
+    source_id    TEXT NOT NULL,
+    profile_hash TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    missing      TEXT,                       -- json list: what the ad asks for that the profile lacks
+    created_at   REAL NOT NULL,
+    PRIMARY KEY (source, source_id)
+);
 """
 
 # card-level fields a re-seen listing may legitimately refresh
@@ -236,3 +252,36 @@ def set_status(source: str, source_id: str, status: str | None) -> None:
                        gone_at=CASE WHEN ?='gone' THEN COALESCE(gone_at, ?) ELSE NULL END
                    WHERE source=? AND source_id=?""",
                 (status, now, status, now, source, source_id))
+
+
+def setting(key: str, default: str = "") -> str:
+    with connect() as con:
+        r = con.execute("SELECT value FROM flat_settings WHERE key=?", (key,)).fetchone()
+    return r[0] if r else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with connect() as con:
+        con.execute("INSERT INTO flat_settings (key, value) VALUES (?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+
+def message(source: str, source_id: str) -> dict | None:
+    with connect() as con:
+        r = con.execute("SELECT * FROM flat_messages WHERE source=? AND source_id=?",
+                        (source, source_id)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    d["missing"] = json.loads(d["missing"] or "[]")
+    return d
+
+
+def save_message(source: str, source_id: str, profile_hash: str, text: str, missing: list[str]) -> None:
+    with connect() as con:
+        con.execute(
+            """INSERT INTO flat_messages (source, source_id, profile_hash, text, missing, created_at)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT DO UPDATE SET profile_hash=excluded.profile_hash, text=excluded.text,
+                                         missing=excluded.missing, created_at=excluded.created_at""",
+            (source, source_id, profile_hash, text, json.dumps(missing, ensure_ascii=False), time.time()))

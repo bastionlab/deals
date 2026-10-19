@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from . import db as fdb
 from ..sources.kleinanzeigen import slug
-from . import geo, ka
+from . import geo, ka, message
 from .poller import CYCLE, rematch
 
 
@@ -30,6 +30,16 @@ class FlatSearch(BaseModel):
     tausch: str = "exclude"                  # exclude | include | only
     wbs: str = "any"                         # any | without | only
     allow_temporary: bool = False            # WG rooms and short lets stay in the feed
+
+
+class Profile(BaseModel):
+    text: str = Field(default="", max_length=4000)
+
+
+class Draft(BaseModel):
+    source: str
+    source_id: str
+    fresh: bool = False                      # write a new one even if a current draft exists
 
 
 class Feedback(BaseModel):
@@ -224,6 +234,36 @@ def build(guard) -> APIRouter:
         if not n:
             raise HTTPException(404, "no such match")
         return {"ok": True}
+
+    @r.get("/profile")
+    def get_profile() -> dict:
+        return {"text": fdb.setting("profile")}
+
+    @r.post("/profile")
+    def set_profile(b: Profile) -> dict:
+        fdb.set_setting("profile", b.text.strip())
+        return {"ok": True}
+
+    @r.post("/message")
+    async def draft(b: Draft) -> dict:
+        """The cached draft if it was written from the current profile, else a new one."""
+        profile = fdb.setting("profile")
+        if not profile.strip():
+            raise HTTPException(400, "Erst ein Profil anlegen: wer ihr seid, Name, Telefon …")
+        f = fdb.get(b.source, b.source_id)
+        if not f:
+            raise HTTPException(404, "no such flat")
+        ph = message.profile_hash(profile)
+        old = fdb.message(b.source, b.source_id)
+        if old and old["profile_hash"] == ph and not b.fresh:
+            return {"text": old["text"], "missing": old["missing"], "cached": True}
+        async with httpx.AsyncClient() as c:
+            try:
+                out = await message.write(c, f, profile)
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                raise HTTPException(502, f"KI nicht erreichbar: {exc}") from exc
+        fdb.save_message(b.source, b.source_id, ph, out["text"], out["missing"])
+        return {"text": out["text"], "missing": out["missing"], "cached": False}
 
     @r.get("/flat/{source}/{source_id}")
     def one(source: str, source_id: str) -> dict:
