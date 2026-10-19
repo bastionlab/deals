@@ -135,8 +135,6 @@ def after_reading(job: dict, reading: dict, spec: dict, km: float | None) -> tup
     langs = set(spec.get("langs") or [])
     if langs and reading.get("sprache") and reading["sprache"] not in langs:
         return False, f"Anzeige auf {reading['sprache'].upper()}"
-    if spec.get("no_german") and reading.get("deutsch") in ("gut", "fliessend"):
-        return False, "verlangt gutes Deutsch"
 
     floor = spec.get("min_fit") or 60
     if reading.get("fit", 0) < floor:

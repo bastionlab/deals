@@ -33,7 +33,6 @@ class JobSearch(BaseModel):
     levels: list[str] = Field(default_factory=list)         # empty = any
     min_salary: float | None = None                         # EUR / year; unstated salaries pass
     langs: list[str] = Field(default_factory=list)          # ad language; empty = any
-    no_german: bool = False                                 # sort out ads that need good German
     no_agency: bool = True
     exclude: list[str] = Field(default_factory=list)        # words in the title
     exclude_companies: list[str] = Field(default_factory=list)
@@ -219,7 +218,7 @@ def build(guard) -> APIRouter:
             employment=_list(b.employment, EMPLOYMENT), permanent_only=bool(b.permanent_only),
             levels=_list(b.levels, LEVELS),
             min_salary=b.min_salary if b.min_salary and b.min_salary > 0 else None,
-            langs=_list(b.langs, ("de", "en")), no_german=bool(b.no_german), no_agency=bool(b.no_agency),
+            langs=_list(b.langs, ("de", "en")), no_agency=bool(b.no_agency),
             exclude=_list(b.exclude), exclude_companies=_list(b.exclude_companies),
             max_age_days=max(1, min(int(b.max_age_days or 14), 60)),
             min_fit=max(0, min(int(b.min_fit or 0), 100)),
