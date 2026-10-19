@@ -23,6 +23,7 @@ import httpx
 from . import ai, db, filters, notify
 from .config import (BROWSER_HEADERS, EMPTY_PARSE_ALERT_AFTER, FETCH_JITTER,
                      FETCH_MIN_INTERVAL, HTTP_TIMEOUT)
+from .flats import poller as flats_poller
 from .sources import kleinanzeigen as ka
 
 log = logging.getLogger("poller")
@@ -45,13 +46,17 @@ class RateLimiter:
         self.interval = interval
         self.jitter = jitter
         self._next = 0.0
+        # the flat hunter shares this limiter from its own task; without the lock
+        # two waiters wake at the same instant and fire back to back
+        self._lock = asyncio.Lock()
 
     async def wait(self) -> None:
-        now = time.monotonic()
-        if now < self._next:
-            await asyncio.sleep(self._next - now)
-        spacing = self.interval * (1 + random.uniform(-self.jitter, self.jitter))
-        self._next = time.monotonic() + spacing
+        async with self._lock:
+            now = time.monotonic()
+            if now < self._next:
+                await asyncio.sleep(self._next - now)
+            spacing = self.interval * (1 + random.uniform(-self.jitter, self.jitter))
+            self._next = time.monotonic() + spacing
 
 
 class Backoff:
@@ -212,6 +217,8 @@ async def run() -> None:
                     "nothing will be pushed. Message the bot, run `deals chatid`, put the id in /etc/deals/deals.env.")
 
     async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
+        # same Kleinanzeigen, same limiter and backoff: flats must not double our footprint
+        flats_task = asyncio.create_task(flats_poller.run(client, limiter, backoff))  # noqa: F841 -- kept alive
         while True:
             searches = db.active_searches()
             if not searches:

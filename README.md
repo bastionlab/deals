@@ -13,6 +13,7 @@ before anyone else notices. Runs in **CT 107 `deals`** (192.168.1.57).
 | `app/poller.py` | the loop: global rate limiter, dedupe, parse-break alarm |
 | `app/notify.py` | Telegram cards |
 | `app/cli.py` | `deals` command |
+| `app/flats/` | flat hunter (see below): `ka.py`, `ibw.py` sources, `extract.py` model reading + rent, `match.py` rules, `poller.py` loop, `api.py` `/flats/*` |
 | `/etc/deals/deals.env` | secrets, 0600, **not in git** |
 | `/var/lib/deals/deals.db` | SQLite (WAL) |
 
@@ -151,3 +152,24 @@ same global rate limiter. `sources.kleinanzeigen.ad_status` reads the answer:
 - Phase 4 — price stats, backfill sweep on save, deal score (non-monotonic:
   >75 % off is a scam signal, not a steal).
 - Phase 5 — `/deals` page in the dashboard, 👍/👎 feedback.
+
+## Flat hunter (`app/flats/`)
+
+Rental flats for the dashboard's **/wohnungen** page. No Telegram — the page is the only reader.
+Runs as a second task inside `deals-poller`, sharing its Kleinanzeigen rate limiter and backoff.
+
+- **Sources:** Kleinanzeigen category 203 (per search: page 1, first poll walks 3 pages) and
+  inberlinwohnen.de (one site-wide list of the state-owned companies; Livewire `wire:snapshot` JSON,
+  full sweep every 6 h marks vanished flats gone). ImmoScout/Immowelt are bot-walled (401/403).
+- **KA detail pages come in two layouts on the same URL** (cookie-bucketed): old server-rendered
+  `addetailslist`, new Astro page whose `<astro-island props>` hold the ad incl. the seller's phone and
+  imprint. `ka.parse_detail` handles both.
+- **Model reads, code decides.** qwen3.5:9b gives offer kind (wohnung/wg_zimmer/zwischenmiete/tausch/
+  gesuch/sonstiges), rent figures from prose, WBS, scam risk and how to apply — never a budget.
+  Warm rent = portal field → model's copied figure → cold + NK + heating → per-m² estimate
+  (labelled `estimated`). Warm is never below the card price. E-mails/phones come from regexes.
+- **Match outcomes:** `hard` (outside area/size/rooms/budget/Tausch/WBS → not shown), `soft`
+  (Gesuch, WG, Zwischenmiete, scam "hoch", only-estimated over budget → Aussortiert), `ok`.
+  Unknown values pass.
+- **Area:** city = Nominatim bbox (+ optional margin), pin = circle. Resolved once at save time, plus
+  KA's own location id (`s-ort-empfehlungen.json`).

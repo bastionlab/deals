@@ -20,6 +20,8 @@ from pydantic import BaseModel, Field
 
 from . import ai, compose, db, filters
 from .config import NEARBY_KM
+from .flats import api as flats_api
+from .flats import db as flats_db
 from .sources import kleinanzeigen as ka
 
 TOKEN = os.environ.get("DEALS_API_TOKEN", "")
@@ -345,6 +347,10 @@ def feedback(body: Feedback) -> dict:
     return {"ok": True}
 
 
+app.include_router(flats_api.build(guard))
+
+
 @app.on_event("startup")
 def _startup() -> None:
     db.init()
+    flats_db.init()
