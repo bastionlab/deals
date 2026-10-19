@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from ..flats import geo
 from . import ai, cv
 from . import db as jdb
-from .poller import load_sources, rematch
+from .poller import load_sources, needs_poll, rematch
 
 MODES = ("onsite", "hybrid", "remote")
 LEVELS = ("junior", "mid", "senior", "lead")
@@ -105,6 +105,11 @@ def build(guard) -> APIRouter:
 
     # --- CV ---------------------------------------------------------------------
 
+    def _rejudge_all() -> int:
+        """Every fit was against the old CV: back into the queue, whatever code still lets through."""
+        jdb.reset_fit()
+        return sum(rematch(s)["queued"] for s in jdb.searches())
+
     @r.get("/cv")
     def get_cv() -> dict:
         text = jdb.setting("cv_text")
@@ -140,8 +145,7 @@ def build(guard) -> APIRouter:
         jdb.set_setting("cv_uploaded_at", str(time.time()))
         jdb.set_setting("cv_profile", json.dumps(prof, ensure_ascii=False))
         jdb.set_setting("cv_hash", cv.cv_hash(text))
-        rejudge = jdb.reset_fit()               # every fit was against the old CV
-        return {"profile": prof, "chars": len(text), "rejudge": rejudge}
+        return {"profile": prof, "chars": len(text), "rejudge": _rejudge_all()}
 
     @r.post("/cv/profile")
     def set_profile(b: Profile) -> dict:
@@ -160,7 +164,7 @@ def build(guard) -> APIRouter:
             clean["years"] = 0
         jdb.set_setting("cv_profile", json.dumps(clean, ensure_ascii=False))
         jdb.set_setting("cv_hash", cv.cv_hash(jdb.setting("cv_text") + json.dumps(clean, sort_keys=True)))
-        return {"profile": clean, "rejudge": jdb.reset_fit()}
+        return {"profile": clean, "rejudge": _rejudge_all()}
 
     @r.post("/cv/delete")
     def delete_cv() -> dict:
@@ -238,16 +242,17 @@ def build(guard) -> APIRouter:
         if not old:
             raise HTTPException(404, "no such search")
         spec = await _spec(b)
+        # only what the portals are asked needs a new poll; every filter is answered from stored postings
+        repoll = needs_poll(old["spec"], spec)
         try:
-            jdb.update_search(sid, b.name.strip(), spec)
+            jdb.update_search(sid, b.name.strip(), spec, repoll)
         except Exception as exc:
             raise HTTPException(400, f"could not save: {exc}") from exc
+        # the fit is scored against the wish; everything else re-applies to the fit we have
+        if old["spec"].get("wish") != spec.get("wish"):
+            jdb.reset_fit(sid)
         out = rematch({"id": sid, "spec": spec})
-        # the wish, level, language and fit floor are judged by the model: read again
-        judged = ("wish", "levels", "langs", "no_german", "no_agency", "min_fit", "modes")
-        if any(old["spec"].get(k) != spec.get(k) for k in judged):
-            out["rejudge"] = jdb.reset_fit(sid)
-        return {"id": sid, "spec": spec, **out}
+        return {"id": sid, "spec": spec, "repoll": repoll, "rejudge": out["queued"], **out}
 
     @r.post("/searches/{sid}/{action}")
     def action(sid: int, action: str) -> dict:
@@ -274,13 +279,13 @@ def build(guard) -> APIRouter:
 
     def _where(search: int | None, show: str) -> tuple[list[str], list]:
         # the one definition of the feed; /feed and /counts both build from it
-        where, params = ["COALESCE(j.status,'') != 'gone'", "s.enabled = 1"], []
+        where, params = ["COALESCE(j.status,'') != 'gone'", "s.enabled = 1", "COALESCE(m.hidden, 0) = 0"], []
         if show == "passed":
             where.append("m.passed = 1 AND COALESCE(m.verdict,'') != 'down' AND m.applied_at IS NULL")
         elif show == "rejected":
             where.append("(m.passed = 0 OR m.verdict = 'down')")
         elif show == "applied":
-            where[1] = "1=1"
+            where[1] = where[2] = "1=1"         # applied stays applied, whatever the search says now
             where.append("(m.applied_at IS NOT NULL OR m.verdict = 'up')")
         elif show == "pending":
             where.append("m.passed IS NULL")

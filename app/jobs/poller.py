@@ -108,20 +108,67 @@ def legs(spec: dict) -> list[dict]:
     return out
 
 
+def settle(sid: int, job: dict, spec: dict) -> str:
+    """Where one pairing stands, from code plus the stored reading -> hidden | out | in | queued.
+
+    Only a pairing with no current fit is queued for the model; a changed filter is
+    re-applied to the fit it already has, so editing a search costs no model time.
+    """
+    verdict, reason, km = match.check(job, spec)
+    row = jdb.match_row(sid, job["source"], job["source_id"])
+    judged = bool(row and row["judged_at"] and job.get("reading"))
+    if verdict == "hard":
+        # keep what would be expensive (or yours) to lose: the fit, your 👍/👎, "beworben"
+        if judged or (row and (row["verdict"] or row["applied_at"])):
+            jdb.put_match(sid, job, passed=False, reason=reason, km=km, hidden=True)
+        elif row:
+            jdb.drop_match(sid, job["source"], job["source_id"])
+        return "hidden"
+    if verdict == "soft":
+        jdb.put_match(sid, job, passed=False, reason=reason, km=km)
+        return "out"
+    if not judged:
+        jdb.put_match(sid, job, passed=None, reason=None, km=km)
+        return "queued"
+    fazit = row["fazit"] or job["reading"].get("fazit")
+    passed, why = match.after_reading(job, {**job["reading"], "fit": row["fit"] or 0, "fazit": fazit}, spec, km)
+    jdb.put_match(sid, job, passed=passed, reason=why or fazit, km=km)
+    return "in" if passed else "out"
+
+
 def match_all(job: dict, searches: list[dict]) -> None:
     for s in searches:
-        jdb.set_match(s["id"], job, match.check(job, s["spec"]))
+        settle(s["id"], job, s["spec"])
 
 
 def rematch(search: dict) -> dict:
-    """Apply one search to everything stored -- after add or edit. Never fetches."""
-    kept = 0
+    """Apply one search to everything stored -- after add or edit. Never fetches, never asks the model."""
+    out = {"hidden": 0, "out": 0, "in": 0, "queued": 0}
     since = time.time() - (search["spec"].get("max_age_days") or 21) * 86400
-    for j in jdb.all_jobs(since):
-        res = match.check(j, search["spec"])
-        jdb.set_match(search["id"], j, res)
-        kept += res[0] != "hard"
-    return {"kept": kept}
+    for j in jdb.all_jobs(since, search["id"]):
+        out[settle(search["id"], j, search["spec"])] += 1
+    return {"kept": out["in"] + out["out"] + out["queued"], "shown": out["in"], "queued": out["queued"]}
+
+
+def needs_poll(old: dict, new: dict) -> bool:
+    """Does the edited search ask the portals anything the old one did not?
+
+    Filters that only narrow (exclude words, level, salary, language, a smaller
+    radius or age) are answered from what is stored.
+    """
+    all_src = set(SOURCES) or set(SOURCE_NAMES)
+    if (set(new.get("sources") or all_src)) - set(old.get("sources") or all_src):
+        return True
+    if set(student_keywords(new)) - set(student_keywords(old)):
+        return True
+    old_legs = {q["remote"]: q for q in legs(old)}
+    for q in legs(new):
+        o = old_legs.get(q["remote"])
+        if o is None or q["max_age_days"] > o["max_age_days"] or (o["no_agency"] and not q["no_agency"]):
+            return True
+        if not q["remote"] and ((q["lat"], q["lon"]) != (o["lat"], o["lon"]) or q["radius_km"] > o["radius_km"]):
+            return True
+    return False
 
 
 async def poll_search(client: httpx.AsyncClient, search: dict, searches: list[dict]) -> None:
@@ -148,7 +195,7 @@ async def poll_search(client: httpx.AsyncClient, search: dict, searches: list[di
                     new += 1
                     match_all(jdb.get(j["source"], j["source_id"]), searches)
                 else:
-                    jdb.set_match(search["id"], j, match.check(jdb.get(j["source"], j["source_id"]), spec))
+                    settle(search["id"], jdb.get(j["source"], j["source_id"]), spec)
     jdb.search_state(search["id"], "; ".join(errors) or None)
     log.info("[%s] %d postings, %d new%s", search["name"], seen, new, f", {len(errors)} errors" if errors else "")
 
@@ -198,14 +245,11 @@ async def judge(client: httpx.AsyncClient, limit: int = JUDGE_PER_TICK) -> int:
         reading = await ai.read(client, job, profile, spec.get("wish") or "")
         if reading is None:
             break                               # Ollama away: retry next tick, don't burn the queue
-        jdb.upsert({**job, "reading": reading, "read_at": time.time()})
-        with jdb.connect() as con:
-            km = con.execute("SELECT distance_km FROM job_matches WHERE search_id=? AND source=? AND source_id=?",
-                             (sid, job["source"], job["source_id"])).fetchone()
-        passed, why = match.after_reading(job, reading, spec, km[0] if km else None)
-        jdb.set_fit(sid, job["source"], job["source_id"], passed=passed, fit=reading["fit"],
-                    reason=why or reading.get("fazit"), pros=reading.get("passt"), gaps=reading.get("fehlt"),
-                    cv_hash=h)
+        job = {**job, "reading": reading, "read_at": time.time()}
+        jdb.upsert(job)
+        jdb.set_fit(sid, job["source"], job["source_id"], fit=reading["fit"], fazit=reading.get("fazit"),
+                    pros=reading.get("passt"), gaps=reading.get("fehlt"), cv_hash=h)
+        settle(sid, job, spec)
         done += 1
     if done:
         log.info("read %d postings", done)

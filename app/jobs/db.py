@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS job_matches (
     distance_km REAL,
     verdict     TEXT,                        -- up | down
     applied_at  REAL,
+    hidden      INTEGER,                     -- 1 = code said hard; kept only so the fit survives an edit
+    fazit       TEXT,                        -- the model's one-liner, kept apart from reason
     PRIMARY KEY (search_id, source, source_id)
 );
 
@@ -86,6 +88,12 @@ _JSON = ("employment", "attrs", "apply", "reading")
 def init() -> None:
     with connect() as con:
         con.executescript(SCHEMA)
+        have = {r[1] for r in con.execute("PRAGMA table_info(job_matches)")}
+        for col in ("hidden INTEGER", "fazit TEXT"):
+            if col.split()[0] not in have:
+                con.execute(f"ALTER TABLE job_matches ADD COLUMN {col}")
+        if "fazit" not in have:             # until now a passed pairing kept the model's line in reason
+            con.execute("UPDATE job_matches SET fazit=reason WHERE passed=1")
         con.execute("DELETE FROM job_matches WHERE search_id NOT IN (SELECT id FROM job_searches)")
 
 
@@ -151,11 +159,14 @@ def known_ids(source: str) -> set[str]:
         return {r[0] for r in con.execute("SELECT source_id FROM jobs WHERE source=?", (source,))}
 
 
-def all_jobs(since: float) -> list[dict]:
+def all_jobs(since: float, sid: int | None = None) -> list[dict]:
+    """Live jobs young enough, plus (with sid) everything already paired with that search."""
     with connect() as con:
         return [decode(r) for r in con.execute(
-            "SELECT * FROM jobs WHERE COALESCE(status,'') != 'gone' AND COALESCE(posted_at, first_seen_at) >= ?",
-            (since,))]
+            """SELECT * FROM jobs WHERE COALESCE(status,'') != 'gone' AND (COALESCE(posted_at, first_seen_at) >= ?
+                 OR EXISTS (SELECT 1 FROM job_matches m WHERE m.search_id=? AND m.source=jobs.source
+                            AND m.source_id=jobs.source_id))""",
+            (since, sid))]
 
 
 # --- searches ----------------------------------------------------------------
@@ -183,10 +194,10 @@ def add_search(name: str, spec: dict) -> int:
                            (name, json.dumps(spec, ensure_ascii=False), time.time())).lastrowid
 
 
-def update_search(sid: int, name: str, spec: dict) -> bool:
+def update_search(sid: int, name: str, spec: dict, repoll: bool) -> bool:
     with connect() as con:
-        return con.execute("UPDATE job_searches SET name=?, spec=?, last_polled_at=NULL WHERE id=?",
-                           (name, json.dumps(spec, ensure_ascii=False), sid)).rowcount > 0
+        return con.execute("UPDATE job_searches SET name=?, spec=?" + (", last_polled_at=NULL" if repoll else "")
+                           + " WHERE id=?", (name, json.dumps(spec, ensure_ascii=False), sid)).rowcount > 0
 
 
 def search_state(sid: int, error: str | None) -> None:
@@ -197,34 +208,40 @@ def search_state(sid: int, error: str | None) -> None:
 
 # --- matches -----------------------------------------------------------------
 
-def set_match(sid: int, job: dict, result: tuple[str, str | None, float | None]) -> None:
-    """Code's verdict: hard removes the pairing, soft = aussortiert, ok = waits for (or keeps) the fit."""
-    verdict, reason, km = result
+def match_row(sid: int, source: str, source_id: str) -> dict | None:
     with connect() as con:
-        if verdict == "hard":
-            con.execute("DELETE FROM job_matches WHERE search_id=? AND source=? AND source_id=?",
-                        (sid, job["source"], job["source_id"]))
-            return
+        r = con.execute("SELECT * FROM job_matches WHERE search_id=? AND source=? AND source_id=?",
+                        (sid, source, source_id)).fetchone()
+    return decode(r) if r else None
+
+
+def put_match(sid: int, job: dict, *, passed: bool | None, reason: str | None, km: float | None,
+              hidden: bool = False) -> None:
+    """Where a pairing stands now (poller.settle decides). Fit, verdict and applied_at are left alone."""
+    with connect() as con:
         con.execute(
-            """INSERT INTO job_matches (search_id, source, source_id, matched_at, passed, reason, distance_km)
-               VALUES (?,?,?,?,?,?,?)
-               ON CONFLICT DO UPDATE SET distance_km=excluded.distance_km,
-                   passed=CASE WHEN excluded.passed = 0 THEN 0
-                               WHEN job_matches.judged_at IS NULL THEN NULL
-                               ELSE job_matches.passed END,
-                   reason=CASE WHEN excluded.passed = 0 THEN excluded.reason ELSE job_matches.reason END""",
-            (sid, job["source"], job["source_id"], time.time(),
-             0 if verdict == "soft" else None, reason if verdict == "soft" else None, km))
+            """INSERT INTO job_matches (search_id, source, source_id, matched_at, passed, reason, distance_km, hidden)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT DO UPDATE SET passed=excluded.passed, reason=excluded.reason,
+                   distance_km=excluded.distance_km, hidden=excluded.hidden""",
+            (sid, job["source"], job["source_id"], time.time(), None if passed is None else int(passed),
+             reason, km, int(hidden)))
 
 
-def set_fit(sid: int, source: str, source_id: str, *, passed: bool, fit: int | None, reason: str | None,
+def drop_match(sid: int, source: str, source_id: str) -> None:
+    with connect() as con:
+        con.execute("DELETE FROM job_matches WHERE search_id=? AND source=? AND source_id=?",
+                    (sid, source, source_id))
+
+
+def set_fit(sid: int, source: str, source_id: str, *, fit: int | None, fazit: str | None,
             pros: list | None, gaps: list | None, cv_hash: str) -> None:
+    """The model's score; whether it passes is settle's call."""
     with connect() as con:
         con.execute(
-            """UPDATE job_matches SET passed=?, fit=?, reason=?, pros=?, gaps=?, judged_at=?, cv_hash=?
+            """UPDATE job_matches SET fit=?, fazit=?, pros=?, gaps=?, judged_at=?, cv_hash=?
                WHERE search_id=? AND source=? AND source_id=?""",
-            (1 if passed else 0, fit, reason, _enc(pros or []), _enc(gaps or []), time.time(), cv_hash,
-             sid, source, source_id))
+            (fit, fazit, _enc(pros or []), _enc(gaps or []), time.time(), cv_hash, sid, source, source_id))
 
 
 def unjudged(limit: int) -> list[tuple[int, dict]]:
@@ -240,10 +257,10 @@ def unjudged(limit: int) -> list[tuple[int, dict]]:
 
 
 def reset_fit(sid: int | None = None) -> int:
-    """Back to 'not judged' (CV or wish changed). Code-sorted pairings stay sorted."""
+    """Every fit is stale (CV or wish changed). Follow with poller.rematch: it re-queues what code lets through."""
     with connect() as con:
         return con.execute(
-            "UPDATE job_matches SET passed=NULL, judged_at=NULL WHERE judged_at IS NOT NULL"
+            "UPDATE job_matches SET judged_at=NULL WHERE judged_at IS NOT NULL"
             + (" AND search_id=?" if sid else ""), (sid,) if sid else ()).rowcount
 
 
