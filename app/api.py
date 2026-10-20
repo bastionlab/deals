@@ -124,6 +124,8 @@ def _conditions(search: int | None, verdict: str | None, shipping: str | None,
         where.append(f"NOT {SORTED_OUT_SQL}")
     elif show == "rejected":
         where.append(SORTED_OUT_SQL)
+    elif show == "liked":                # 👍 stays a label in Passend; this is just the list of them
+        where.append("m.verdict = 'up'")
     if search:
         where.append("m.search_id = ?")
         params.append(search)
@@ -164,8 +166,18 @@ def counts(verdict: str | None = None, shipping: str | None = None,
             JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
             JOIN searches s ON s.id=m.search_id
             WHERE {' AND '.join(out_where)}""", out_params).fetchone()["n"]
+        # the view pills show every view's size, not just the open one
+        views = {}
+        for kind in ("passed", "liked", "rejected"):
+            w, p = _conditions(None, verdict, shipping, kind, hide_down)
+            views[kind] = con.execute(f"""
+                SELECT COUNT(*) AS n
+                FROM matches m
+                JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
+                JOIN searches s ON s.id=m.search_id
+                WHERE {' AND '.join(w)}""", p).fetchone()["n"]
     per = {str(r["sid"]): r["n"] for r in rows}
-    return {"per_search": per, "total": sum(per.values()), "sorted_out": sorted_out}
+    return {"per_search": per, "total": sum(per.values()), "sorted_out": sorted_out, **views}
 
 
 @app.get("/feed", dependencies=[Depends(guard)])
@@ -174,6 +186,8 @@ def feed(limit: int = 60, search: int | None = None, verdict: str | None = None,
          hide_down: bool = False) -> list[dict]:
     where, params = _conditions(search, verdict, shipping, show, hide_down)
     params.append(min(limit, 200))
+    # best match first, like /jobs; the rest stays newest first
+    order = "COALESCE(m.score, 0) DESC, " if show in ("passed", "liked") else ""
     with db.connect() as con:
         rows = con.execute(f"""
             SELECT l.*, m.search_id, m.score, m.reason, m.passed, m.judged_at,
@@ -182,7 +196,7 @@ def feed(limit: int = 60, search: int | None = None, verdict: str | None = None,
             JOIN listings l ON l.source=m.source AND l.source_id=m.source_id
             JOIN searches s ON s.id=m.search_id
             WHERE {' AND '.join(where)}
-            ORDER BY COALESCE(l.posted_at, l.first_seen_at) DESC
+            ORDER BY {order}COALESCE(l.posted_at, l.first_seen_at) DESC
             LIMIT ?""", params).fetchall()
     return [_row(r) for r in rows]
 

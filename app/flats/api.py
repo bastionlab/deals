@@ -143,8 +143,12 @@ def build(guard) -> APIRouter:
     def counts(show: str = "passed") -> dict:
         # a flat two searches both found counts once in the total, once in each tab
         per = {str(s["id"]): n for s in fdb.searches() if (n := len(_cards(s["id"], show)))}
-        hidden = 0 if show == "all" else len(_cards(None, "rejected"))
-        return {"per_search": per, "total": len(_cards(None, show)), "sorted_out": hidden}
+        rejected = len(_cards(None, "rejected"))
+        with fdb.connect() as con:          # the 👍 list, folded the same way /liked folds it
+            liked = len(dedupe.group([dict(x) for x in con.execute(f"""
+                SELECT f.*, m.verdict {_JOIN} WHERE m.verdict = 'up' GROUP BY f.source, f.source_id""")]))
+        return {"per_search": per, "total": len(_cards(None, show)), "sorted_out": 0 if show == "all" else rejected,
+                "passed": len(_cards(None, "passed")), "rejected": rejected, "liked": liked}
 
     @r.get("/geocode")
     async def geocode(q: str | None = None, lat: float | None = None, lon: float | None = None) -> dict:
