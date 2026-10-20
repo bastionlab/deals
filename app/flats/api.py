@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from . import db as fdb
 from ..sources.kleinanzeigen import slug
-from . import geo, ka, message
+from . import dedupe, geo, ka, message
 from .poller import CYCLE, rematch
 
 
@@ -82,41 +82,45 @@ def build(guard) -> APIRouter:
     _LIKED = """EXISTS (SELECT 1 FROM flat_matches u WHERE u.source=f.source AND u.source_id=f.source_id
                            AND u.verdict='up')"""
 
-    def _where(search: int | None, show: str) -> tuple[list[str], list]:
-        # the one definition of the feed; /feed and /counts both build from it
-        # a flat posted over a week ago is long promised to someone; the 👍 list keeps those
-        where, params = ["COALESCE(f.status, '') != 'gone'", f"NOT {_LIKED}",
-                         "COALESCE(f.posted_at, f.first_seen_at) >= ?"], [time.time() - fdb.MAX_AGE]
-        sorted_out = "(m.passed = 0 OR COALESCE(f.status,'') = 'reserved' OR COALESCE(m.verdict,'') = 'down')"
-        if show == "passed":
-            where.append(f"NOT {sorted_out}")
-        elif show == "rejected":
-            where.append(sorted_out)
-        if search:
-            where.append("m.search_id = ?")
-            params.append(search)
-        return where, params
-
+    _OUT = "(m.passed = 0 OR COALESCE(f.status,'') = 'reserved' OR COALESCE(m.verdict,'') = 'down')"
     _JOIN = """FROM flat_matches m
                JOIN flats f ON f.source=m.source AND f.source_id=m.source_id
                JOIN flat_searches s ON s.id=m.search_id"""
 
+    def _cards(search: int | None, show: str) -> list[dict]:
+        # the one definition of the feed; /feed and /counts both build from it.
+        # Copies of one flat (dedupe.py) are judged as one: 👍 or 👎 on any copy, or
+        # reserved anywhere, moves them all; aussortiert only if every copy is.
+        # a flat posted over a week ago is long promised to someone; the 👍 list keeps those
+        where, params = ["COALESCE(f.status, '') != 'gone'",
+                         "COALESCE(f.posted_at, f.first_seen_at) >= ?"], [time.time() - fdb.MAX_AGE]
+        if search:
+            where.append("m.search_id = ?")
+            params.append(search)
+        with fdb.connect() as con:
+            rows = [dict(x) for x in con.execute(f"""
+                SELECT f.*, m.search_id, m.passed, m.reason, m.distance_km, m.verdict, m.matched_at,
+                       s.name AS search_name, {_LIKED} AS liked, {_OUT} AS out
+                {_JOIN} WHERE {' AND '.join(where)}
+                ORDER BY COALESCE(f.posted_at, f.first_seen_at) DESC""", params)]
+        out = []
+        for g in dedupe.group(rows):
+            if any(r["liked"] for r in g):
+                continue
+            rejected = all(r["out"] for r in g) or \
+                any(r["verdict"] == "down" or r["status"] == "reserved" for r in g)
+            if (show == "passed" and rejected) or (show == "rejected" and not rejected):
+                continue
+            card = dedupe.pick(g, (lambda r: r["verdict"] == "down") if rejected else (lambda r: not r["out"]))
+            for k in ("liked", "out", "description"):  # the list never shows the text; keeps the payload small
+                card.pop(k, None)
+            out.append(card)
+        out.sort(key=lambda c: c.get("posted_at") or c["first_seen_at"], reverse=True)
+        return out
+
     @r.get("/feed")
     def feed(search: int | None = None, show: str = "passed", limit: int = 100) -> list[dict]:
-        where, params = _where(search, show)
-        with fdb.connect() as con:
-            rows = con.execute(f"""
-                SELECT f.*, m.search_id, m.passed, m.reason, m.distance_km, m.verdict, m.matched_at,
-                       s.name AS search_name
-                {_JOIN} WHERE {' AND '.join(where)}
-                ORDER BY COALESCE(f.posted_at, f.first_seen_at) DESC LIMIT ?""",
-                [*params, min(limit, 300)]).fetchall()
-        out = []
-        for row in rows:
-            d = fdb.decode(row)
-            d.pop("description", None)          # the list never shows it; keeps the payload small
-            out.append(d)
-        return out
+        return [fdb.decode(c) for c in _cards(search, show)[:min(limit, 300)]]
 
     @r.get("/liked")
     def liked() -> list[dict]:
@@ -129,23 +133,18 @@ def build(guard) -> APIRouter:
                 GROUP BY f.source, f.source_id
                 ORDER BY COALESCE(f.status, '') = 'gone', COALESCE(f.posted_at, f.first_seen_at) DESC""").fetchall()
         out = []
-        for row in rows:
-            d = fdb.decode(row)
+        for g in dedupe.group([dict(x) for x in rows]):
+            d = fdb.decode(dedupe.pick(g, lambda r: r["status"] != "gone"))
             d.pop("description", None)
             out.append(d)
         return out
 
     @r.get("/counts")
     def counts(show: str = "passed") -> dict:
-        where, params = _where(None, show)
-        rej, rparams = _where(None, "rejected")
-        with fdb.connect() as con:
-            per = {str(x["sid"]): x["n"] for x in con.execute(
-                f"SELECT m.search_id AS sid, COUNT(*) AS n {_JOIN} WHERE {' AND '.join(where)} GROUP BY m.search_id",
-                params)}
-            hidden = 0 if show == "all" else con.execute(
-                f"SELECT COUNT(*) AS n {_JOIN} WHERE {' AND '.join(rej)}", rparams).fetchone()["n"]
-        return {"per_search": per, "total": sum(per.values()), "sorted_out": hidden}
+        # a flat two searches both found counts once in the total, once in each tab
+        per = {str(s["id"]): n for s in fdb.searches() if (n := len(_cards(s["id"], show)))}
+        hidden = 0 if show == "all" else len(_cards(None, "rejected"))
+        return {"per_search": per, "total": len(_cards(None, show)), "sorted_out": hidden}
 
     @r.get("/geocode")
     async def geocode(q: str | None = None, lat: float | None = None, lon: float | None = None) -> dict:
