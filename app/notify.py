@@ -1,4 +1,5 @@
-"""Telegram push. Phase 1 has no score yet, so a card is title/price/where/when."""
+"""Push a deal: to Discord #deals when its webhook is set (then Telegram stays quiet), else Telegram.
+Phase 1 has no score yet, so a card is title/price/where/when."""
 from __future__ import annotations
 
 import html
@@ -7,6 +8,7 @@ from datetime import datetime
 
 import httpx
 
+from . import discord
 from .config import HTTP_TIMEOUT, TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
 from .filters import is_shipped
 
@@ -18,8 +20,12 @@ def _api(method: str) -> str:
     return API.format(token=TELEGRAM_TOKEN, method=method)
 
 
-def configured() -> bool:
+def telegram() -> bool:
     return bool(TELEGRAM_TOKEN and TELEGRAM_CHAT_ID)
+
+
+def configured() -> bool:
+    return bool(discord.hook("deals")) or telegram()
 
 
 def _price(row) -> str:
@@ -62,7 +68,27 @@ def caption(row) -> str:
 INQUIRY = "Hallo, ist es noch verfügbar?"
 
 
+def _where(row) -> str:
+    return " · ".join(x for x in [
+        row["district"] or "",
+        f"{row['distance_km']:.0f} km" if row["distance_km"] is not None else "",
+        "📦 Versand" if is_shipped(dict(row)) else "🚲 Abholen",
+    ] if x)
+
+
+def embed(row) -> dict:
+    when = _when(row)
+    e = {"title": discord.clip(row["title"], 250), "url": row["url"], "color": 0x2ECC71,
+         "description": f"**{_price(row)}**   {_where(row)}\n```\n{INQUIRY}\n```",
+         "footer": {"text": " · ".join(x for x in (when, row["search_name"]) if x)}}
+    if row["image_url"]:
+        e["image"] = {"url": row["image_url"]}
+    return e
+
+
 async def send(client: httpx.AsyncClient, row) -> bool:
+    if discord.hook("deals"):
+        return await discord.post(client, "deals", {"embeds": [embed(row)]})
     text = caption(row)
     markup = {"inline_keyboard": [[
         {"text": "💬 Nachricht kopieren", "copy_text": {"text": INQUIRY}},
@@ -88,7 +114,11 @@ async def send(client: httpx.AsyncClient, row) -> bool:
 
 
 async def alert(client: httpx.AsyncClient, text: str) -> bool:
-    """Operational alerts (parser broke, source unreachable) -- same chat, plain."""
+    """Operational alerts (parser broke, source unreachable): Discord #alerts, else the Telegram chat, plain."""
+    if discord.hook("alerts"):
+        return await discord.post(client, "alerts", {"content": f"⚠️ deals: {text}"})
+    if not telegram():
+        return False
     try:
         r = await client.post(_api("sendMessage"), json={
             "chat_id": TELEGRAM_CHAT_ID, "text": f"⚠️ {text}"}, timeout=HTTP_TIMEOUT)

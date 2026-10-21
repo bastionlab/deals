@@ -22,8 +22,10 @@ import time
 
 import httpx
 
+from .. import discord
 from . import ai, cv, match
 from . import db as jdb
+from . import notify as jnotify
 from .sources.common import HEADERS, Limiter
 
 log = logging.getLogger("jobs")
@@ -258,6 +260,7 @@ async def judge(client: httpx.AsyncClient, limit: int = JUDGE_PER_TICK) -> int:
 
 async def run(client: httpx.AsyncClient | None = None) -> None:
     jdb.init()
+    discord.init()
     SOURCES.update(load_sources())
     log.info("job hunter up: %s", ", ".join(SOURCES))
     # own client: portals want browser headers, not the KA client's cookies
@@ -279,4 +282,8 @@ async def run(client: httpx.AsyncClient | None = None) -> None:
                 await judge(c)
             except Exception:
                 log.exception("job cycle failed")
+            try:
+                await jnotify.flush(c)
+            except Exception:
+                log.exception("job discord push failed")
             await asyncio.sleep(max(10.0, TICK - (time.monotonic() - started)))

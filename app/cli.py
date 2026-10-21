@@ -110,10 +110,10 @@ def cmd_testsend(args):
         async with httpx.AsyncClient() as client:
             return await notify.alert(client, "Testnachricht vom deals-poller — Verbindung steht.")
     if not notify.configured():
-        print("TELEGRAM_TOKEN / TELEGRAM_CHAT_ID not set in the environment")
+        print("no Discord #deals hook in /etc/discord.json and TELEGRAM_TOKEN / TELEGRAM_CHAT_ID not set")
         sys.exit(1)
     if not asyncio.run(go()):
-        print("telegram refused the message -- see the error above")
+        print("the message was refused -- see the error above")
         sys.exit(1)
     print("sent")
 

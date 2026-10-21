@@ -25,10 +25,12 @@ import time
 
 import httpx
 
+from .. import discord
 from ..config import HTTP_TIMEOUT
 from ..sources import kleinanzeigen
 from . import db as fdb
 from . import extract, geo, ibw, is24, ka, match
+from . import notify as fnotify
 
 log = logging.getLogger("flats")
 
@@ -319,6 +321,7 @@ async def recheck_is24(client, limiter) -> None:
 
 async def run(client: httpx.AsyncClient, ka_limiter, backoff) -> None:
     fdb.init()
+    discord.init()
     # same limiter class as the deals poller, separate instance: another site, another budget
     ibw_limiter = type(ka_limiter)(IBW_INTERVAL, 0.4)
     is24_limiter = type(ka_limiter)(IS24_INTERVAL, 0.4)
@@ -345,4 +348,8 @@ async def run(client: httpx.AsyncClient, ka_limiter, backoff) -> None:
                 await recheck_is24(client, is24_limiter)
         except Exception:
             log.exception("flat cycle failed")
+        try:
+            await fnotify.flush(client)
+        except Exception:
+            log.exception("flat discord push failed")
         await asyncio.sleep(max(10.0, CYCLE - (time.monotonic() - started)))

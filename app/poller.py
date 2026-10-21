@@ -222,7 +222,7 @@ async def flush(client: httpx.AsyncClient) -> None:
             db.mark_notified(row["search_id"], row["source"], row["source_id"])
             await asyncio.sleep(0.4)
         else:
-            break          # Telegram is unhappy; leave the rest queued for next pass
+            break          # Discord/Telegram is unhappy; leave the rest queued for next pass
 
 
 async def run() -> None:
@@ -231,7 +231,7 @@ async def run() -> None:
     backoff = Backoff()
     log.info("poller up (interval %.1fs)", FETCH_MIN_INTERVAL)
     if not notify.configured():
-        log.warning("Telegram not configured (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID empty) -- "
+        log.warning("Neither Discord #deals nor Telegram configured (TELEGRAM_TOKEN / TELEGRAM_CHAT_ID empty) -- "
                     "nothing will be pushed. Message the bot, run `deals chatid`, put the id in /etc/deals/deals.env.")
 
     async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
