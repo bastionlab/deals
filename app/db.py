@@ -143,7 +143,7 @@ def rematch(search_id: int, spec: dict) -> dict:
 
     Editing a search should change the feed straight away instead of waiting for
     each listing to be re-posted. Newly matching listings are inserted already
-    marked as notified: an edit must never fire a burst of Telegram pushes.
+    marked as notified: an edit must never fire a burst of Discord pushes.
     """
     from .filters import check
 

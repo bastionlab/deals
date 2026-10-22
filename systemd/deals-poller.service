@@ -1,5 +1,5 @@
 [Unit]
-Description=deals poller (Kleinanzeigen -> Telegram)
+Description=deals poller (Kleinanzeigen -> Discord)
 After=network-online.target
 Wants=network-online.target
 

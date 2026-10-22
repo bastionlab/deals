@@ -22,8 +22,6 @@ BROWSER_HEADERS = {
     "Cache-Control": "no-cache",
 }
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # Plenty of nearby sellers tick "Versand moeglich" as well. Below this distance
 # you would just go and get it, so a listing only counts as shipped beyond it.

@@ -10,7 +10,6 @@ from datetime import datetime
 import httpx
 
 from . import db, notify
-from .config import HTTP_TIMEOUT, TELEGRAM_TOKEN
 from .sources import kleinanzeigen as ka
 
 
@@ -88,29 +87,12 @@ def cmd_rm(args):
     print(f"removed {args.name}")
 
 
-def cmd_chatid(args):
-    """Find the chat id: message the bot once, then run this."""
-    r = httpx.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates", timeout=HTTP_TIMEOUT)
-    data = r.json()
-    seen = {}
-    for upd in data.get("result", []):
-        msg = upd.get("message") or upd.get("channel_post") or {}
-        chat = msg.get("chat") or {}
-        if chat.get("id"):
-            seen[chat["id"]] = chat.get("first_name") or chat.get("title") or chat.get("type")
-    if not seen:
-        print("no messages yet -- send your bot any message, then run this again")
-        sys.exit(1)
-    for cid, who in seen.items():
-        print(f"TELEGRAM_CHAT_ID={cid}   ({who})")
-
-
 def cmd_testsend(args):
     async def go():
         async with httpx.AsyncClient() as client:
             return await notify.alert(client, "Testnachricht vom deals-poller — Verbindung steht.")
     if not notify.configured():
-        print("no Discord #deals hook in /etc/discord.json and TELEGRAM_TOKEN / TELEGRAM_CHAT_ID not set")
+        print("no Discord #deals hook in /etc/discord.json -- set it on the dashboard (Metrics → Discord)")
         sys.exit(1)
     if not asyncio.run(go()):
         print("the message was refused -- see the error above")
@@ -226,11 +208,10 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("name")
         s.set_defaults(func=fn)
 
-    sub.add_parser("chatid").set_defaults(func=cmd_chatid)
     sub.add_parser("testsend").set_defaults(func=cmd_testsend)
 
     po = sub.add_parser("poll", help="one pass, then exit")
-    po.add_argument("--quiet", action="store_true", help="do not send Telegram messages")
+    po.add_argument("--quiet", action="store_true", help="do not post to Discord")
     po.set_defaults(func=cmd_poll)
 
     j = sub.add_parser("judge", help="run the AI relevance filter over stored matches")

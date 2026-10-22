@@ -1,6 +1,6 @@
 # deals — Kleinanzeigen/eBay steal finder
 
-Finds underpriced listings in Berlin (or shippable) and pushes them to Telegram
+Finds underpriced listings in Berlin (or shippable) and pushes them to Discord #deals
 before anyone else notices. Runs in **CT 107 `deals`** (192.168.1.57).
 
 ## Layout
@@ -11,7 +11,7 @@ before anyone else notices. Runs in **CT 107 `deals`** (192.168.1.57).
 | `app/filters.py` | the free half of matching (keywords, wanted-ads, distance) |
 | `app/ai.py` | relevance judging with qwen3.5:9b + the numeric guard |
 | `app/poller.py` | the loop: global rate limiter, dedupe, parse-break alarm |
-| `app/notify.py` | Telegram cards |
+| `app/notify.py` | Discord embeds (#deals) + #alerts |
 | `app/cli.py` | `deals` command |
 | `app/flats/` | flat hunter (see below): `ka.py`, `ibw.py` sources, `extract.py` model reading + rent, `match.py` rules, `poller.py` loop, `api.py` `/flats/*` |
 | `/etc/deals/deals.env` | secrets, 0600, **not in git** |
@@ -25,9 +25,9 @@ Deploy after changes: `./deploy.sh` (syncs into CT 107, reinstalls the unit, res
 deals add <name> "<search words>" --terms a,b --exclude x,y --min-price 25 --max-price 250 --radius 10
 deals ls            # searches, hit counts, last poll, last error
 deals recent        # what matched lately
-deals poll --quiet  # one pass, no Telegram
+deals poll --quiet  # one pass, no Discord
 deals chatid        # after messaging the bot once
-deals testsend      # prove the Telegram path works
+deals testsend      # prove the Discord #alerts path works
 deals disable <name> / enable <name> / rm <name>
 ```
 
@@ -37,7 +37,7 @@ One **global** rate limiter (`DEALS_FETCH_INTERVAL`, default 8 s, ±40 % jitter)
 shared by every search, so request volume does not grow with the number of
 searches. Searches are polled round-robin, oldest-first: with N searches each
 refreshes every N × 8 s. HTTP 403/429 triggers a shared exponential backoff and
-one Telegram alert.
+one Discord #alerts message.
 
 ## Selector policy
 
@@ -139,12 +139,12 @@ same global rate limiter. `sources.kleinanzeigen.ad_status` reads the answer:
 - anything else unreadable → `None`, only `checked_at` is stamped. A listing is
   never hidden on a page we could not read.
 
-`gone` is excluded in `_conditions()` (feed, tab counts) and from Telegram;
+`gone` is excluded in `_conditions()` (feed, tab counts) and from Discord;
 `reserved` stays visible with a badge.
 
 ## Status
 
-- **Phase 0/1 — done.** Kleinanzeigen source, scheduler, dedupe, hard filters, Telegram.
+- **Phase 0/1 — done.** Kleinanzeigen source, scheduler, dedupe, hard filters, Telegram (since 2026-10-22 Discord).
 - **Phase 3 — done.** Relevance judging (`app/ai.py`), intents, `/deals` shows what
   was filtered and why.
 - Phase 2 — eBay Browse API (`EBAY_DE`). `ebay.de` HTML is 403, the API is not.
@@ -155,7 +155,7 @@ same global rate limiter. `sources.kleinanzeigen.ad_status` reads the answer:
 
 ## Flat hunter (`app/flats/`)
 
-Rental flats for the dashboard's **/wohnungen** page. No Telegram — the page is the only reader.
+Rental flats for the dashboard's **/wohnungen** page. Good new matches post to Discord #wohnungen.
 Runs as a second task inside `deals-poller`, sharing its Kleinanzeigen rate limiter and backoff.
 
 - **Sources:** Kleinanzeigen category 203 (per search: page 1, first poll walks 3 pages) and
