@@ -25,8 +25,10 @@ from . import geo
 # (seen: 11.3 €/m² at Potsdamer Platz = scam; real private sublets at 12.1 and 13).
 FLOOR_PER_M2 = 9.5
 FLOOR_PER_M2_FURNISHED = 12.0
-_FURNISHED = re.compile(r"(?<!un)(?<!teil)(?<!teil-)möbliert|furnished", re.I)
-_UNFURNISHED = re.compile(r"unmöbliert|unfurnished", re.I)
+_FURNISHED = re.compile(r"(?<!un)(?<!teil)(?<!teil-)möbliert|furnished|(?<!non )meublée?", re.I)
+_UNFURNISHED = re.compile(r"unmöbliert|unfurnished|non meublée?|\bvide\b", re.I)
+
+SOURCE_COUNTRY = {"bienici": "fr"}     # every other portal is German
 
 TEMPORARY = {"wg_zimmer": "nur ein WG-Zimmer", "zwischenmiete": "Zwischenmiete / befristet"}
 NOT_AN_OFFER = {"gesuch": "Gesuch, kein Angebot", "sonstiges": "kein Wohnungsangebot"}
@@ -39,6 +41,10 @@ def _eur(v: float) -> str:
 def check(flat: dict, spec: dict) -> tuple[str, str | None, float | None]:
     """-> (ok | soft | hard, reason, km from the area's centre)."""
     km = None
+    # a portal only lists its own country; without coordinates the area test below
+    # cannot run, and a Berlin ad must still never pass a Paris search
+    if SOURCE_COUNTRY.get(flat.get("source"), "de") != geo.country(spec):
+        return "hard", "anderes Land", km
     if flat.get("lat") is not None and flat.get("lon") is not None and spec.get("lat") is not None:
         inside, km = geo.in_area(spec, flat["lat"], flat["lon"])
         km = round(km, 1)
@@ -91,7 +97,10 @@ def check(flat: dict, spec: dict) -> tuple[str, str | None, float | None]:
             " aktiv: Phishing-Verdacht", km
     if (bait := too_cheap(flat)):
         return "soft", f"Betrugsverdacht: {bait}", km
-    if flat.get("scam") == "hoch":
+    # Bien'ici pro accounts are agencies feeding it from their software; their own anti-fraud
+    # boilerplate ("never send your RIB by mail, apply on our platform") reads as a scam to the model
+    trusted = flat.get("source") == "bienici" and flat.get("commercial") == 1
+    if flat.get("scam") == "hoch" and not trusted:
         return "soft", "Betrugsverdacht" + (f": {flat['ai_note']}" if flat.get("ai_note") else ""), km
     if budget and warm is not None and how == "estimated" and warm > budget:
         return "soft", f"geschätzt {_eur(warm)} warm > {_eur(budget)}", km

@@ -90,7 +90,7 @@ READ_SCHEMA = {
         "level": {"type": "string", "enum": list(LEVELS)},
         "anstellung": {"type": "array", "items": {"type": "string", "enum": list(KINDS)}},
         "vermittler": {"type": "boolean"},
-        "sprache": {"type": "string", "enum": ["de", "en"]},
+        "sprache": {"type": "string", "enum": ["de", "en", "fr"]},
         "deutsch": {"type": "string", "enum": ["keins", "grundkenntnisse", "gut", "fliessend", "unbekannt"]},
         "gehalt": {"type": "string"},
         "bewerbung": {"type": "string"},
@@ -113,12 +113,14 @@ Fakten aus der Anzeige (nur was dort steht, sonst "unbekannt" bzw. ""):
 - anstellung: welche Anstellungsarten die Anzeige anbietet: vollzeit, teilzeit, werkstudent (fuer
   eingeschriebene Studierende), praktikum, ausbildung, freelance, minijob. Leer wenn nicht erkennbar.
   "Full-time" = vollzeit. Eine normale Festanstellung ist KEINE Werkstudentenstelle.
+  Franzoesisch: CDI/CDD = vollzeit (oder teilzeit, wenn "temps partiel"), "stage" = praktikum,
+  "alternance"/"apprentissage" = ausbildung, "freelance"/"indépendant" = freelance.
 - vermittler: true wenn die Anzeige von einer Personalvermittlung, Zeitarbeit oder einem Recruiter
   FUER einen ungenannten Kunden ist ("unser Kunde", "im Auftrag", "Arbeitnehmerueberlassung"). Sonst false.
   Stellt die genannte Firma selbst ein, ist es KEIN Vermittler - auch nicht bei Beratungen, IT-Dienstleistern
   oder Konzernen (Accenture, Capgemini, Deloitte ... sind Arbeitgeber).
-- sprache: Sprache der Anzeige
-- deutsch: welches Deutschniveau verlangt wird
+- sprache: Sprache der Anzeige (de, en, fr)
+- deutsch: welches Deutschniveau verlangt wird ("keins" bei franzoesischen Anzeigen ohne Deutsch-Anforderung)
 - gehalt: Gehaltsangabe woertlich, wenn genannt, sonst ""
 - bewerbung: hoechstens 12 Woerter, WIE man sich laut Anzeige bewirbt (z.B. "Online-Formular, Anschreiben optional",
   "E-Mail an jobs@firma.de mit Zeugnissen"), sonst ""

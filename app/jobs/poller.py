@@ -38,7 +38,17 @@ JUDGE_PER_TICK = 40          # ~8 s each on qwen3.5:9b
 FIND_PER_TICK = 12
 MAX_PAGES = 2
 SOURCE_NAMES = ("ba", "stepstone", "linkedin", "xing", "arbeitnow", "berlinstartupjobs",
-                "remotive", "himalayas", "jobicy", "remoteok", "weworkremotely")
+                "remotive", "himalayas", "jobicy", "remoteok", "weworkremotely",
+                "wttj", "hellowork", "francetravail")
+# portals that only know one country; a module's own COUNTRY wins. Everything else
+# (LinkedIn, the remote boards) is asked for every search.
+COUNTRY_OF = {"ba": "de", "stepstone": "de", "xing": "de", "arbeitnow": "de", "berlinstartupjobs": "de"}
+
+
+def serves(mod, country: str) -> bool:
+    c = getattr(mod, "COUNTRY", None)
+    c = c if isinstance(c, str) and len(c) == 2 else COUNTRY_OF.get(mod.SOURCE)   # himalayas: "Germany" is an API param
+    return c is None or c == country
 
 
 def load_sources() -> dict:
@@ -95,12 +105,17 @@ def student_keywords(spec: dict) -> list[str]:
     return list(dict.fromkeys(out))[:8]
 
 
+def country(spec: dict) -> str:
+    """Searches from before countries existed are German."""
+    return spec.get("country") or "de"
+
+
 def legs(spec: dict) -> list[dict]:
     """The portal queries one search needs."""
     modes = set(spec.get("modes") or match.MODE_DE)
     base = {"keywords": student_keywords(spec), "max_age_days": spec.get("max_age_days") or 21,
             "no_agency": spec.get("no_agency", True),        # BA can drop recruiters server-side
-            "max_pages": MAX_PAGES}
+            "max_pages": MAX_PAGES, "country": country(spec)}
     out = []
     if modes & {"onsite", "hybrid"}:
         out.append({**base, "place": spec.get("place") or None, "lat": spec.get("lat"), "lon": spec.get("lon"),
@@ -179,7 +194,7 @@ async def poll_search(client: httpx.AsyncClient, search: dict, searches: list[di
     errors, seen, new = [], 0, 0
     for q in legs(spec):
         for name, mod in SOURCES.items():
-            if name not in allowed or resting(name):
+            if name not in allowed or resting(name) or not serves(mod, q["country"]):
                 continue
             try:
                 found = await mod.search(client, q, _limiter(mod))
@@ -234,9 +249,10 @@ async def read_posting(client: httpx.AsyncClient, job: dict, budget: dict) -> di
 
 
 async def judge(client: httpx.AsyncClient, limit: int = JUDGE_PER_TICK) -> int:
-    profile = json.loads(jdb.setting("cv_profile", "{}") or "{}")
-    h = jdb.setting("cv_hash")
     specs = {s["id"]: s["spec"] for s in jdb.searches()}
+    # each search reads against its own CV if it has one, else the shared one
+    cvs = {sid: (json.loads(jdb.cv_setting("cv_profile", sid, "{}") or "{}"), jdb.cv_setting("cv_hash", sid))
+           for sid in specs}
     done = 0
     budget = {"find": FIND_PER_TICK}
     for sid, job in jdb.unjudged(limit):
@@ -244,6 +260,7 @@ async def judge(client: httpx.AsyncClient, limit: int = JUDGE_PER_TICK) -> int:
         if spec is None:
             continue
         job = await read_posting(client, job, budget)
+        profile, h = cvs[sid]
         reading = await ai.read(client, job, profile, spec.get("wish") or "")
         if reading is None:
             break                               # Ollama away: retry next tick, don't burn the queue

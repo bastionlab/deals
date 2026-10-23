@@ -24,14 +24,14 @@ LEVEL_DE = {"junior": "Junior", "mid": "Mid-Level", "senior": "Senior", "lead": 
 _FAR_REGION = re.compile(r"(?i)\b(usa?|united states|americas?|north america|canada|latam|latin america|"
                          r"apac|asia|india|australia|uk only|brazil|mexico|est|pst|us time ?zones?)\b")
 _NEAR_REGION = re.compile(r"(?i)\b(deutschland|germany|dach|eu|europ\w*|emea|cet|cest|weltweit|worldwide|"
-                          r"anywhere|global)\b")
+                          r"anywhere|global|france|frankreich)\b")
 EMPLOYMENT_KINDS = {"vollzeit", "teilzeit", "werkstudent", "praktikum", "ausbildung", "freelance", "minijob"}
 
 
 _KIND_WORDS = {
     "werkstudent": r"werkstudent|working student|studentische|student job|studentenjob",
-    "praktikum": r"praktik|intern\b|internship",
-    "ausbildung": r"ausbildung|azubi|auszubildende|apprentice",
+    "praktikum": r"praktik|intern\b|internship|\bstage\b|stagiaire",
+    "ausbildung": r"ausbildung|azubi|auszubildende|apprentice|alternance|apprenti",
     "minijob": r"minijob|mini-job|450|520|556|603",
     "freelance": r"freelance|freiberuf|contractor",
     "teilzeit": r"teilzeit|part[- ]time",

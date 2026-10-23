@@ -63,7 +63,7 @@ async def search(client, q: dict, limiter: Limiter) -> list[dict]:
     for kw in q.get("keywords") or []:
         for page in range(1, max(1, q.get("max_pages") or 1) + 1):
             await limiter.wait()
-            r = await client.get(API, params={"q": kw, "country": COUNTRY, "sort": "recent", "page": page},
+            r = await client.get(API, params={"q": kw, "country": "France" if q.get("country") == "fr" else COUNTRY, "sort": "recent", "page": page},
                                  headers={"Accept": "application/json"})
             r.raise_for_status()
             rows = r.json().get("jobs") or []

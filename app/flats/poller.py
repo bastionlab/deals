@@ -14,6 +14,11 @@ Per cycle:
 5. ImmoScout24, per search: newest pages until one holds nothing new (that is
    also the seed), one exposé read + model reading per new flat that could fit,
    then due exposé rechecks (404 -> gone).
+6. Bien'ici, per French search: same walk; the list already holds the whole ad,
+   so a new flat costs only the model reading. Rechecks: 404 -> gone.
+
+Portals only see searches in their country (spec["country"]): KA/IS24 Germany,
+IBW Berlin, Bien'ici France.
 
 Every Kleinanzeigen request goes through the deals limiter and backoff.
 """
@@ -29,7 +34,7 @@ from .. import discord
 from ..config import HTTP_TIMEOUT
 from ..sources import kleinanzeigen
 from . import db as fdb
-from . import extract, geo, ibw, is24, ka, match
+from . import bienici, extract, geo, ibw, is24, ka, match
 from . import notify as fnotify
 
 log = logging.getLogger("flats")
@@ -46,12 +51,16 @@ IS24_MAX_PAGES = 4          # 50 flats a page, newest first
 IS24_MAX_DETAILS = 20
 IS24_RECHECKS = 3
 IS24_PORTAL = {"type": "immoscout24", "label": "ImmoScout-Nachricht", "how": "Kontaktformular auf ImmoScout24"}
+BIENICI_INTERVAL = 6.0
+BIENICI_MAX_PAGES = 4       # 50 a page, newest first
+BIENICI_MAX_READS = 25      # model readings per search per cycle
+BIENICI_RECHECKS = 3
 BERLIN = (52.52, 13.405)
 BERLIN_REACH_KM = 25
 
 
 def touches_berlin(spec: dict) -> bool:
-    if spec.get("lat") is None:
+    if spec.get("lat") is None or geo.country(spec) != "de":
         return False
     return geo.km_between(spec["lat"], spec["lon"], *BERLIN) - geo.reach_km(spec) < BERLIN_REACH_KM
 
@@ -167,6 +176,8 @@ async def read_flat(client, limiter, backoff, card: dict) -> dict | None:
 
 async def poll_ka(client, limiter, backoff, search: dict, searches: list[dict]) -> None:
     spec = search["spec"]
+    if not spec.get("ka_location"):
+        return                                  # not a place Kleinanzeigen knows (abroad)
     pages = 1 if search["seeded"] else SEED_PAGES
     details = cards_n = fits = 0
     for page in range(1, pages + 1):
@@ -258,6 +269,8 @@ async def _is24(client, limiter, method: str, url: str) -> httpx.Response | None
 
 
 async def poll_is24(client, limiter, search: dict, searches: list[dict]) -> None:
+    if geo.country(search["spec"]) != "de":
+        return
     known = fdb.known_ids(is24.SOURCE)
     seen = read = fits = 0
     for page in range(1, IS24_MAX_PAGES + 1):
@@ -319,12 +332,77 @@ async def recheck_is24(client, limiter) -> None:
             log.info("is24 recheck %s: gone | %s", row["source_id"], row["title"][:60])
 
 
+# --- Bien'ici ----------------------------------------------------------------
+
+async def _bienici(client, limiter, url: str) -> httpx.Response | None:
+    await limiter.wait()
+    try:
+        return await client.get(url, headers=bienici.HEADERS, timeout=HTTP_TIMEOUT)
+    except httpx.HTTPError as exc:
+        log.warning("bienici %s: %s", url[:90], exc)
+        return None
+
+
+async def poll_bienici(client, limiter, search: dict, searches: list[dict]) -> None:
+    spec = search["spec"]
+    if geo.country(spec) != "fr":
+        return
+    if not spec.get("bienici_zones"):
+        fdb.search_state(search["id"], error="Ort bei Bien'ici unbekannt")
+        return
+    known = fdb.known_ids(bienici.SOURCE)
+    seen = read = fits = 0
+    for page in range(1, BIENICI_MAX_PAGES + 1):
+        r = await _bienici(client, limiter, bienici.search_url(spec, page))
+        if r is None or r.status_code != 200:
+            fdb.search_state(search["id"], error=f"Bien'ici http {r.status_code if r is not None else 'error'}")
+            return
+        ads, total = bienici.parse_list(r.json())
+        seen += len(ads)
+        fresh = 0
+        for ad in ads:
+            card, detail = ad["card"], ad["detail"]
+            have = fdb.get(card["source"], card["source_id"])
+            if have and have.get("judged_at"):
+                fdb.upsert(card)
+                continue
+            # unknown, or could fit but not read yet (read budget): either keeps the walk going
+            could = any(match.card_could_match(card, s["spec"]) for s in searches)
+            fresh += could or card["source_id"] not in known
+            if not could or read >= BIENICI_MAX_READS:
+                if not have:
+                    fdb.upsert(card)
+                continue
+            read += 1
+            merged = {**card, **{k: v for k, v in detail.items() if v is not None}}
+            reading = await extract.read_ad(client, merged)
+            flat = extract.enrich(card, detail, reading, time.time(), bienici.PORTAL, cc="fr")
+            fdb.upsert(flat)
+            fits += match_everywhere(flat, searches) > 0
+        if not fresh or page * bienici.PER_PAGE >= total:
+            break
+    fdb.search_state(search["id"], error=None, seeded=True)
+    if read or not search["seeded"]:
+        log.info("[%s] bienici %d ads, %d read, %d fit a search", search["name"], seen, read, fits)
+
+
+async def recheck_bienici(client, limiter) -> None:
+    for row in fdb.due_rechecks(bienici.SOURCE, BIENICI_RECHECKS):
+        r = await _bienici(client, limiter, bienici.api_ad(row["source_id"]))
+        status = None if r is None else ("gone" if r.status_code in (404, 410)
+                                         else "active" if r.status_code == 200 else None)
+        fdb.set_status(row["source"], row["source_id"], status)
+        if status == "gone":
+            log.info("bienici recheck %s: gone | %s", row["source_id"], row["title"][:60])
+
+
 async def run(client: httpx.AsyncClient, ka_limiter, backoff) -> None:
     fdb.init()
     discord.init()
     # same limiter class as the deals poller, separate instance: another site, another budget
     ibw_limiter = type(ka_limiter)(IBW_INTERVAL, 0.4)
     is24_limiter = type(ka_limiter)(IS24_INTERVAL, 0.4)
+    bienici_limiter = type(ka_limiter)(BIENICI_INTERVAL, 0.4)
     state: dict = {}
     log.info("flat hunter up")
     while True:
@@ -345,7 +423,13 @@ async def run(client: httpx.AsyncClient, ka_limiter, backoff) -> None:
                         await poll_is24(client, is24_limiter, s, searches)
                     except Exception:
                         log.exception("[%s] is24 poll failed", s["name"])
+                    try:
+                        await poll_bienici(client, bienici_limiter, s, searches)
+                    except Exception:
+                        log.exception("[%s] bienici poll failed", s["name"])
                 await recheck_is24(client, is24_limiter)
+                if any(geo.country(s["spec"]) == "fr" for s in searches):
+                    await recheck_bienici(client, bienici_limiter)
         except Exception:
             log.exception("flat cycle failed")
         try:

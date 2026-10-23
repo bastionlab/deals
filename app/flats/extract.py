@@ -49,13 +49,13 @@ SCHEMA = {
                  "heizung_in_nebenkosten", "wbs", "betrug", "kontakt", "kontakt_name", "notiz"],
 }
 
-SYSTEM = """Du liest ein Wohnungsinserat aus Berlin und gibst die Fakten als JSON zurueck.
+SYSTEM = """Du liest ein Wohnungsinserat (deutsch oder franzoesisch) und gibst die Fakten als JSON zurueck.
 
 art:
 - "wohnung": eine ganze Wohnung zur regulaeren, unbefristeten Miete
-- "wg_zimmer": nur ein Zimmer in einer WG oder Wohnung
+- "wg_zimmer": nur ein Zimmer in einer WG oder Wohnung ("colocation", "chambre chez l'habitant")
 - "zwischenmiete": befristet, Untermiete auf Zeit, moebliertes Apartment auf Zeit,
-  "2-6 Monate", "Business Apartment", "Zwischenmiete"
+  "2-6 Monate", "Business Apartment", "Zwischenmiete", "bail mobilité", "location courte durée", "sous-location"
 - "tausch": Wohnungstausch, die Wohnung gibt es nur gegen eine andere ("Tauschwohnung", "Swap")
 - "gesuch": jemand SUCHT eine Wohnung, bietet keine an
 - "sonstiges": Stellplatz, Gewerbe, Ferienwohnung, Werbung, kein konkretes Angebot
@@ -64,6 +64,7 @@ Zahlen in Euro pro Monat, nur wenn sie im Text oder in den Fakten stehen, sonst 
 Nicht rechnen, nicht schaetzen, nur abschreiben.
 - warmmiete: Gesamtmiete/Warmmiete inkl. Nebenkosten und Heizung, wenn so genannt ("864 € warm").
   "799 €/980 € warm" oder "799 kalt / 980 warm" heisst: kaltmiete 799, warmmiete 980.
+  Franzoesisch: "charges comprises"/"CC" = warmmiete, "hors charges"/"HC" = kaltmiete, "provision sur charges" = nebenkosten.
   Der angezeigte Preis ist meist die Kaltmiete, nicht die Warmmiete.
 - kaltmiete, nebenkosten, heizkosten: einzeln, wenn genannt
 - heizung_in_nebenkosten: "ja" wenn die Nebenkosten die Heizung einschliessen
@@ -76,6 +77,9 @@ betrug: Wie wahrscheinlich ist das ein Betrugsinserat?
   Airbnb-/Treuhand-Zahlung, Ausweiskopie vorab
 - "mittel": einzelne Auffaelligkeiten, z.B. hohe Abloese/Abstand fuer Moebel, Maklerprovision vom Untermieter
 - "niedrig": normales Angebot
+Bewerbung, Besichtigung oder Zahlung ueber eine echte Vermietungsplattform oder Agentur ist normal und KEIN
+Betrugszeichen (Frankreich: Manda, Lodgis, Studapart, Bien'ici, SeLoger, Foncia, Nexity ...; Dossier ueber
+DossierFacile). Betrug ist, wenn ein angeblicher Privatvermieter Geld vorab will oder an eine Fremdseite verweist.
 
 kontakt: in hoechstens 12 Woertern, WIE man sich laut Inserat bewerben soll, z.B.
 "Nachricht über Kleinanzeigen mit Selbstauskunft", "E-Mail an den Vermieter", "Anruf ab 18 Uhr".
@@ -120,9 +124,11 @@ _AT = r"\s*(?:@|\(at\)|\[at\]|\{at\}|\(ät\)| at )\s*"
 _DOT = r"\s*(?:\.|\(dot\)|\[dot\]|\(punkt\)|\[punkt\])\s*"
 _EMAIL = re.compile(rf"([A-Za-z0-9._%+-]+){_AT}([A-Za-z0-9-]+(?:{_DOT}[A-Za-z0-9-]+)*){_DOT}([A-Za-z]{{2,10}})\b")
 _PHONE = re.compile(r"(?<![\d€.,])(\+49|0049|0)[\s/-]{0,2}(\(?\d{2,5}\)?(?:[\s/-]{0,2}\d){5,11})(?![\d€])")
+# French numbers are always 0 + 9 digits, written in pairs: "06 12 34 56 78", "+33 6 12 34 56 78"
+_PHONE_FR = re.compile(r"(?<![\d€.,])(\+33|0033|0)\s?\(?0?\)?\s?([1-9](?:[\s.-]?\d{2}){4})(?![\d€])")
 
 
-def contacts(text: str) -> list[dict]:
+def contacts(text: str, cc: str = "de") -> list[dict]:
     """E-mail and phone channels written into an ad, de-obfuscated, de-duplicated."""
     out, seen = [], set()
     for m in _EMAIL.finditer(text or ""):
@@ -131,11 +137,11 @@ def contacts(text: str) -> list[dict]:
         if addr not in seen:
             seen.add(addr)
             out.append({"type": "email", "value": addr})
-    for m in _PHONE.finditer(text or ""):
+    for m in (_PHONE_FR if cc == "fr" else _PHONE).finditer(text or ""):
         digits = re.sub(r"\D", "", m.group(2))
-        if not 7 <= len(digits) <= 12:
+        if not (len(digits) == 9 if cc == "fr" else 7 <= len(digits) <= 12):
             continue
-        num = "+49" + digits.lstrip("0")
+        num = ("+33" + digits) if cc == "fr" else "+49" + digits.lstrip("0")
         if num not in seen:
             seen.add(num)
             out.append({"type": "phone", "value": num})
@@ -183,7 +189,8 @@ def rent(flat: dict, reading: dict | None) -> dict:
 KA_PORTAL = {"type": "kleinanzeigen", "label": "Kleinanzeigen-Nachricht", "how": "Nachricht über Kleinanzeigen"}
 
 
-def enrich(flat: dict, detail: dict, reading: dict | None, now: float, portal: dict = KA_PORTAL) -> dict:
+def enrich(flat: dict, detail: dict, reading: dict | None, now: float, portal: dict = KA_PORTAL,
+           cc: str = "de") -> dict:
     """Merge card + detail page + model reading into the stored row.
 
     portal = the site's own message channel: {type, label, how (the default when the ad says nothing)}.
@@ -200,7 +207,7 @@ def enrich(flat: dict, detail: dict, reading: dict | None, now: float, portal: d
     if detail.get("phone"):                      # the seller's own number from the ad page
         channels += contacts("0" + re.sub(r"^\+?49|^0", "", re.sub(r"[^\d+]", "", detail["phone"])))
     channels += [c for c in contacts("\n".join(x for x in (flat.get("title"), flat.get("description"),
-                                                         detail.get("imprint")) if x))
+                                                         detail.get("imprint")) if x), cc)
                  if c not in channels]
     channels.append({"type": portal["type"], "value": flat["url"], "label": portal["label"]})
     wbs = detail.get("wbs_attr") or {"ja": 1, "nein": 0}.get(r.get("wbs"))

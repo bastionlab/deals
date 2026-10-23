@@ -44,14 +44,17 @@ class JobSearch(BaseModel):
 class Upload(BaseModel):
     filename: str = Field(max_length=200)
     data: str                                               # base64 PDF
+    search_id: int | None = None                            # that search's own CV; None = the shared one
 
 
 class Profile(BaseModel):
     profile: dict
+    search_id: int | None = None
 
 
 class Wish(BaseModel):
     wish: str = Field(default="", max_length=1500)
+    search_id: int | None = None                            # whose CV to suggest from
 
 
 class Feedback(BaseModel):
@@ -100,23 +103,33 @@ def build(guard) -> APIRouter:
                 "errors": [{"name": s["name"], "error": s["last_error"]} for s in rows if s["last_error"]],
                 "per_source": per, "seen_24h": c["day"], "pending": c["pending"],
                 "sources": [{"id": k, "label": v} for k, v in labels.items()],
-                "cv": bool(jdb.setting("cv_text"))}
+                "cv": bool(jdb.setting("cv_text")) or any(jdb.cv_owner(s["id"]) for s in rows)}
 
     # --- CV ---------------------------------------------------------------------
 
-    def _rejudge_all() -> int:
-        """Every fit was against the old CV: back into the queue, whatever code still lets through."""
-        jdb.reset_fit()
-        return sum(rematch(s)["queued"] for s in jdb.searches())
+    def _rejudge_all(sid: int | None = None) -> int:
+        """Every fit was against the old CV: back into the queue, whatever code still lets through.
+
+        The shared CV only touches searches without their own; a search's CV only that search.
+        """
+        hit = [s for s in jdb.searches() if (s["id"] == sid if sid else jdb.cv_owner(s["id"]) is None)]
+        for s in hit:
+            jdb.reset_fit(s["id"])
+        return sum(rematch(s)["queued"] for s in hit)
+
+    def _profile(sid: int | None) -> dict:
+        return json.loads(jdb.cv_setting("cv_profile", sid, "{}") or "{}")
 
     @r.get("/cv")
-    def get_cv() -> dict:
-        text = jdb.setting("cv_text")
+    def get_cv(search: int | None = None) -> dict:
+        own = jdb.cv_owner(search)
+        text = jdb.cv_setting("cv_text", search)
+        base = {"own": own is not None if search else None, "shared": bool(jdb.setting("cv_text"))}
         if not text:
-            return {"present": False}
-        return {"present": True, "filename": jdb.setting("cv_filename"),
-                "uploaded_at": float(jdb.setting("cv_uploaded_at", "0") or 0), "chars": len(text),
-                "profile": json.loads(jdb.setting("cv_profile", "{}") or "{}")}
+            return {"present": False, **base}
+        return {"present": True, **base, "filename": jdb.cv_setting("cv_filename", search),
+                "uploaded_at": float(jdb.cv_setting("cv_uploaded_at", search, "0") or 0), "chars": len(text),
+                "profile": _profile(search)}
 
     @r.post("/cv")
     async def upload_cv(b: Upload) -> dict:
@@ -139,17 +152,20 @@ def build(guard) -> APIRouter:
                 prof = await cv.profile(c, text)
             except (httpx.HTTPError, ValueError, KeyError) as exc:
                 raise HTTPException(502, f"KI nicht erreichbar: {exc}") from exc
-        jdb.set_setting("cv_text", text)
-        jdb.set_setting("cv_filename", b.filename)
-        jdb.set_setting("cv_uploaded_at", str(time.time()))
-        jdb.set_setting("cv_profile", json.dumps(prof, ensure_ascii=False))
-        jdb.set_setting("cv_hash", cv.cv_hash(text))
-        return {"profile": prof, "chars": len(text), "rejudge": _rejudge_all()}
+        sid = b.search_id if b.search_id and jdb.search(b.search_id) else None
+        k = lambda key: jdb.cv_key(key, sid)  # noqa: E731
+        jdb.set_setting(k("cv_text"), text)
+        jdb.set_setting(k("cv_filename"), b.filename)
+        jdb.set_setting(k("cv_uploaded_at"), str(time.time()))
+        jdb.set_setting(k("cv_profile"), json.dumps(prof, ensure_ascii=False))
+        jdb.set_setting(k("cv_hash"), cv.cv_hash(text))
+        return {"profile": prof, "chars": len(text), "rejudge": _rejudge_all(sid)}
 
     @r.post("/cv/profile")
     def set_profile(b: Profile) -> dict:
         """Hand edits to the extracted profile (the model missed a skill, wrong level ...)."""
-        if not jdb.setting("cv_text"):
+        sid = jdb.cv_owner(b.search_id)          # edits whichever CV that search reads against
+        if not jdb.setting(jdb.cv_key("cv_text", sid)):
             raise HTTPException(400, "Erst einen Lebenslauf hochladen")
         p = b.profile
         clean = {k: str(p.get(k) or "")[:300] for k in ("name", "headline", "location", "education", "summary")}
@@ -161,19 +177,22 @@ def build(guard) -> APIRouter:
             clean["years"] = max(0, min(60, int(p.get("years") or 0)))
         except (TypeError, ValueError):
             clean["years"] = 0
-        jdb.set_setting("cv_profile", json.dumps(clean, ensure_ascii=False))
-        jdb.set_setting("cv_hash", cv.cv_hash(jdb.setting("cv_text") + json.dumps(clean, sort_keys=True)))
-        return {"profile": clean, "rejudge": _rejudge_all()}
+        jdb.set_setting(jdb.cv_key("cv_profile", sid), json.dumps(clean, ensure_ascii=False))
+        jdb.set_setting(jdb.cv_key("cv_hash", sid),
+                        cv.cv_hash(jdb.setting(jdb.cv_key("cv_text", sid)) + json.dumps(clean, sort_keys=True)))
+        return {"profile": clean, "rejudge": _rejudge_all(sid)}
 
     @r.post("/cv/delete")
-    def delete_cv() -> dict:
-        with jdb.connect() as con:
-            con.execute("DELETE FROM job_settings WHERE key LIKE 'cv_%'")
+    def delete_cv(search: int | None = None) -> dict:
+        """With ?search=: drop that search's own CV (it falls back to the shared one)."""
+        jdb.drop_cv(search)
+        if search:
+            _rejudge_all(search)
         return {"ok": True}
 
     @r.post("/suggest")
     async def suggest(b: Wish) -> dict:
-        profile = json.loads(jdb.setting("cv_profile", "{}") or "{}")
+        profile = _profile(b.search_id)
         if not b.wish.strip() and not profile:
             raise HTTPException(400, "Erst einen Wunsch eingeben oder einen Lebenslauf hochladen")
         async with httpx.AsyncClient() as c:
@@ -188,11 +207,11 @@ def build(guard) -> APIRouter:
     def searches() -> list[dict]:
         return sorted(jdb.searches(), key=lambda s: s["id"])
 
-    async def _spec(b: JobSearch) -> dict:
+    async def _spec(b: JobSearch, sid: int | None = None) -> dict:
         modes = _list(b.modes, MODES) or list(MODES)
         keywords = ai.tidy_keywords(_list(b.keywords, n=6))
         if not keywords:
-            profile = json.loads(jdb.setting("cv_profile", "{}") or "{}")
+            profile = _profile(sid)
             if not b.wish.strip() and not profile:
                 raise HTTPException(400, "Suchbegriffe, Wunsch oder Lebenslauf fehlt")
             async with httpx.AsyncClient() as c:
@@ -213,12 +232,12 @@ def build(guard) -> APIRouter:
                     raise HTTPException(502, f"geocoder: {exc}") from exc
             if not hit:
                 raise HTTPException(400, f"„{b.place}“ nicht gefunden")
-            spec.update(place=hit["label"], lat=hit["lat"], lon=hit["lon"])
+            spec.update(place=hit["label"], lat=hit["lat"], lon=hit["lon"], country=hit.get("country") or "de")
         spec.update(
             employment=_list(b.employment, EMPLOYMENT), permanent_only=bool(b.permanent_only),
             levels=_list(b.levels, LEVELS),
             min_salary=b.min_salary if b.min_salary and b.min_salary > 0 else None,
-            langs=_list(b.langs, ("de", "en")), no_agency=bool(b.no_agency),
+            langs=_list(b.langs, ("de", "en", "fr")), no_agency=bool(b.no_agency),
             exclude=_list(b.exclude), exclude_companies=_list(b.exclude_companies),
             max_age_days=max(1, min(int(b.max_age_days or 14), 60)),
             min_fit=max(0, min(int(b.min_fit or 0), 100)),
@@ -240,7 +259,7 @@ def build(guard) -> APIRouter:
         old = jdb.search(sid)
         if not old:
             raise HTTPException(404, "no such search")
-        spec = await _spec(b)
+        spec = await _spec(b, sid)
         # only what the portals are asked needs a new poll; every filter is answered from stored postings
         repoll = needs_poll(old["spec"], spec)
         try:
@@ -261,6 +280,7 @@ def build(guard) -> APIRouter:
             if action == "delete":
                 n = con.execute("DELETE FROM job_searches WHERE id=?", (sid,)).rowcount
                 con.execute("DELETE FROM job_matches WHERE search_id=?", (sid,))
+                con.executemany("DELETE FROM job_settings WHERE key=?", [(jdb.cv_key(k, sid),) for k in jdb.CV_KEYS])
             elif action == "run":
                 n = con.execute("UPDATE job_searches SET last_polled_at=NULL WHERE id=?", (sid,)).rowcount
             else:

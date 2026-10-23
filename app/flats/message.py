@@ -25,7 +25,7 @@ log = logging.getLogger("flats.message")
 SCHEMA = {
     "type": "object",
     "properties": {
-        "sprache": {"type": "string", "enum": ["de", "en"]},
+        "sprache": {"type": "string", "enum": ["de", "en", "fr"]},
         "absaetze": {"type": "array", "items": {"type": "string"}},
         "gruss": {"type": "string"},
         "unterschrift": {"type": "array", "items": {"type": "string"}},
@@ -37,8 +37,10 @@ SCHEMA = {
 SYSTEM = """Du schreibst fuer einen Wohnungssuchenden die erste Nachricht an den Anbieter einer Mietwohnung.
 
 Du bekommst das Inserat und das PROFIL des Suchenden. Schreibe:
-- in der Sprache des Inserats: "de" fuer Deutsch, "en" nur wenn das Inserat ueberwiegend englisch ist
-- hoeflich per "Sie", warm und knapp: 60 bis 120 Woerter, aus Sicht des Suchenden ("wir" bei mehreren, sonst "ich")
+- in der Sprache des Inserats: "de" fuer Deutsch, "fr" fuer Franzoesisch, "en" nur wenn das Inserat ueberwiegend englisch ist.
+  Ein franzoesisches Inserat bekommt eine franzoesische Nachricht, auch wenn das PROFIL deutsch ist: uebersetze die Fakten.
+  Franzoesisch: vouvoiement, Unterlagen heissen dort "dossier complet" (justificatifs de revenus, garant, pièce d'identité)
+- hoeflich per "Sie"/"vous", warm und knapp: 60 bis 120 Woerter, aus Sicht des Suchenden ("wir" bei mehreren, sonst "ich")
 - absaetze: 2-3 Absaetze Fliesstext. OHNE Anrede und OHNE Gruss: "Guten Tag ..." wird davor gesetzt,
   der erste Absatz beginnt direkt mit dem Inhalt ("ich interessiere mich ...", "mit grossem Interesse ...")
 - mit Bezug auf diese konkrete Wohnung: nenne 1-2 echte Details aus dem Inserat (Lage/Kiez, Zimmer, Balkon, Einzugstermin ...)
@@ -46,7 +48,7 @@ Du bekommst das Inserat und das PROFIL des Suchenden. Schreibe:
 - verlangt das Inserat bestimmte Angaben oder Unterlagen (Alter, Personenzahl, Einkommen, Schufa, Selbstauskunft,
   Einzugstermin, Haustiere ...), beantworte sie, SOWEIT das PROFIL sie enthaelt
 - bitte um einen Besichtigungstermin
-- gruss: nur die Grussformel, z.B. "Viele Grüße" / "Best regards"
+- gruss: nur die Grussformel, z.B. "Viele Grüße" / "Best regards" / "Bien cordialement"
 - unterschrift: Zeilen darunter: Name(n) aus dem PROFIL, dann Telefon und E-Mail, falls im PROFIL, je eine Zeile
 - Laeuft die Bewerbung ueber ein Portal oder Formular: die Nachricht IST der Text fuer dessen Freitextfeld.
   Nicht auf das Portal verweisen, nicht ankuendigen, sich dort zu bewerben.
@@ -77,10 +79,13 @@ _COMPANY = re.compile(
     r"\b(gmbh|ag|se|kg|eg|ug|gbr|e\.?\s?g\.|mbh|immobilien|hausverwaltung|verwaltung|wohnungsbau|"
     r"genossenschaft|makler|real estate|properties|living|apartments?|residen[cz]|kundenservice|"
     r"degewo|howoge|gewobag|gesobau|stadt und land|wbm|berlinovo|vonovia|deutsche wohnen|adler|"
-    r"tauschwohnung|wohnungsswap|swap|team|service|gruppe|group|berlin)\b", re.I)
+    r"tauschwohnung|wohnungsswap|swap|team|service|gruppe|group|berlin|"
+    r"sarl|sas|sasu|sa|sci|eurl|agence|immo|immobili[eè]re?|gestion|foncia|century|orpi|laforêt|nexity|"
+    r"citya|guy hoquet|stéphane plaza|paris)\b", re.I)
 _NOT_A_NAME = {"privat", "privatperson", "anbieter", "vermieter", "vermieterin", "eigentümer",
-               "eigentuemer", "mieter", "nachmieter", "owner", "landlord", "user", "nutzer"}
-_TITLE = re.compile(r"^(herr|frau|hr\.|fr\.|mr\.?|mrs\.?|ms\.?)\s+", re.I)
+               "eigentuemer", "mieter", "nachmieter", "owner", "landlord", "user", "nutzer",
+               "particulier", "propriétaire", "proprietaire", "agence"}
+_TITLE = re.compile(r"^(herr|frau|hr\.|fr\.|mr\.?|mrs\.?|ms\.?|mme\.?|m\.|monsieur|madame)\s+", re.I)
 
 
 def addressee(flat: dict) -> str | None:
@@ -104,13 +109,19 @@ def addressee(flat: dict) -> str | None:
 def greeting(name: str | None, lang: str) -> str:
     if lang == "en":
         return f"Hello {name}," if name else "Dear Sir or Madam,"
+    if lang == "fr":
+        m = _TITLE.match(name or "")
+        if m:
+            t = m.group(1).lower().rstrip(".")
+            return f"{'Madame' if t in ('frau', 'fr', 'mrs', 'ms', 'mme', 'madame') else 'Monsieur'} {name[m.end():]},"
+        return f"Bonjour {name}," if name else "Madame, Monsieur,"
     if not name:
         return "Sehr geehrte Damen und Herren,"
     m = _TITLE.match(name)
     if m:                                    # the ad itself said Herr/Frau: that is not a guess
         t = m.group(1).lower().rstrip(".")
         rest = name[m.end():]
-        return f"Sehr geehrte Frau {rest}," if t in ("frau", "fr", "mrs", "ms") else f"Sehr geehrter Herr {rest},"
+        return f"Sehr geehrte Frau {rest}," if t in ("frau", "fr", "mrs", "ms", "mme", "madame") else f"Sehr geehrter Herr {rest},"
     return f"Guten Tag {name},"
 
 
@@ -132,7 +143,7 @@ def _prompt(flat: dict, profile: str) -> str:
             f"BESCHREIBUNG:\n{(flat.get('description') or '-')[:3500]}")
 
 
-_GREET = re.compile(r"^(sehr geehrte[rs]?|guten tag|hallo|hi|hello|dear|liebe[rs]?)\b[^,!\n]{0,40}[,!]\s*", re.I)
+_GREET = re.compile(r"^(sehr geehrte[rs]?|guten tag|hallo|hi|hello|dear|liebe[rs]?|bonjour|madame|monsieur)\b[^,!\n]{0,40}[,!]\s*", re.I)
 
 
 def _para(text: str) -> str:
@@ -159,9 +170,9 @@ async def write(client: httpx.AsyncClient, flat: dict, profile: str) -> dict:
     r = await client.post(f"{OLLAMA}/api/chat", json=body, timeout=TIMEOUT)
     r.raise_for_status()
     out = json.loads(r.json()["message"]["content"])
-    lang = "en" if out.get("sprache") == "en" else "de"
+    lang = out.get("sprache") if out.get("sprache") in ("en", "fr") else "de"
     sign = [_para(x) for x in (out.get("unterschrift") or []) if _para(x)]
-    closing = _para(out.get("gruss") or "") or ("Best regards" if lang == "en" else "Viele Grüße")
+    closing = _para(out.get("gruss") or "") or {"en": "Best regards", "fr": "Bien cordialement"}.get(lang, "Viele Grüße")
     text = f"{greeting(addressee(flat), lang)}\n\n{_body(out.get('absaetze') or [])}\n\n" + \
         "\n".join([closing.rstrip(","), *sign])
     missing = [str(x).strip()[:40] for x in (out.get("fehlt") or []) if str(x).strip()][:6]

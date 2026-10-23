@@ -265,6 +265,29 @@ def reset_fit(sid: int | None = None) -> int:
 
 
 # --- settings (CV) -----------------------------------------------------------
+# A search can carry its own CV: the same keys with "@<search id>" appended.
+# Without one it reads against the shared CV (the plain keys).
+
+CV_KEYS = ("cv_text", "cv_filename", "cv_uploaded_at", "cv_profile", "cv_hash")
+
+
+def cv_key(key: str, sid: int | None) -> str:
+    return f"{key}@{sid}" if sid else key
+
+
+def cv_owner(sid: int | None) -> int | None:
+    """The search id whose own CV applies, or None for the shared one."""
+    return sid if sid and setting(cv_key("cv_text", sid)) else None
+
+
+def cv_setting(key: str, sid: int | None = None, default: str = "") -> str:
+    return setting(cv_key(key, cv_owner(sid)), default)
+
+
+def drop_cv(sid: int | None) -> None:
+    with connect() as con:
+        con.executemany("DELETE FROM job_settings WHERE key=?", [(cv_key(k, sid),) for k in CV_KEYS])
+
 
 def setting(key: str, default: str = "") -> str:
     with connect() as con:

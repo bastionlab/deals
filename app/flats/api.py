@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from . import db as fdb
 from ..sources.kleinanzeigen import slug
-from . import dedupe, geo, ka, message
+from . import bienici, dedupe, geo, ka, message
 from .poller import CYCLE, rematch
 
 
@@ -18,6 +18,7 @@ class FlatSearch(BaseModel):
     name: str = Field(min_length=1, max_length=48)
     mode: str = "city"                       # city | pin
     place: str = Field(default="", max_length=120)
+    ref: str | None = Field(default=None, max_length=24)   # city: the candidate picked ("R62422")
     lat: float | None = None                 # pin only
     lon: float | None = None
     radius_km: float = 0                     # pin: the radius; city: extra margin around it
@@ -34,11 +35,13 @@ class FlatSearch(BaseModel):
 
 class Profile(BaseModel):
     text: str = Field(default="", max_length=4000)
+    search_id: int | None = None             # a search's own text; None = the shared one
 
 
 class Draft(BaseModel):
     source: str
     source_id: str
+    search_id: int | None = None             # whose "Über uns" writes it
     fresh: bool = False                      # write a new one even if a current draft exists
 
 
@@ -151,16 +154,23 @@ def build(guard) -> APIRouter:
                 "passed": len(_cards(None, "passed")), "rejected": rejected, "liked": liked}
 
     @r.get("/geocode")
-    async def geocode(q: str | None = None, lat: float | None = None, lon: float | None = None) -> dict:
-        """Resolve a place name (or a pin) for the search form's preview."""
+    async def geocode(q: str | None = None, lat: float | None = None, lon: float | None = None,
+                      ref: str | None = None) -> dict:
+        """Resolve a place name (or a pin) for the search form's preview.
+
+        A name answers the best hit plus `options` (up to 5) to choose from; ref = exactly that one.
+        """
         async with httpx.AsyncClient() as c:
             try:
                 if lat is not None and lon is not None:
                     hit = await geo.reverse(c, lat, lon)
                     if hit:
                         hit.update(lat=lat, lon=lon)
+                elif ref:
+                    hit = await geo.lookup(c, ref)
                 elif q and q.strip():
-                    hit = await geo.geocode(c, q.strip())
+                    opts = await geo.places(c, q.strip())
+                    hit = {**opts[0], "options": opts} if opts else None
                 else:
                     raise HTTPException(400, "q or lat/lon required")
             except httpx.HTTPError as exc:
@@ -181,19 +191,31 @@ def build(guard) -> APIRouter:
                     area = {"lat": b.lat, "lon": b.lon, "bbox": None,
                             "place": b.place.strip() or rev.get("label") or f"{b.lat:.4f}, {b.lon:.4f}"}
                     hints = (rev.get("postcode"), rev.get("city"))
+                    cc = rev.get("country") or "de"
                 else:
                     if not b.place.strip():
                         raise HTTPException(400, "Ort fehlt")
-                    hit = await geo.geocode(c, b.place.strip())
+                    hit = (await geo.lookup(c, b.ref) if b.ref else None) or await geo.geocode(c, b.place.strip())
                     if not hit:
                         raise HTTPException(400, f"„{b.place}“ nicht gefunden")
-                    area = {"lat": hit["lat"], "lon": hit["lon"], "bbox": hit["bbox"], "place": hit["label"]}
+                    area = {"lat": hit["lat"], "lon": hit["lon"], "bbox": hit["bbox"], "place": hit["label"],
+                            "shape": hit["shape"], "ref": hit["ref"], "full": hit["full"]}
+                    if not hit["shape"]:
+                        # only a point is known (a Kiez, a square): a circle round it, or nothing would match
+                        mode = "pin"
+                        area["bbox"] = None
+                        b.radius_km = max(float(b.radius_km or 0), geo.POINT_RADIUS_KM)
                     hints = (hit["label"], hit.get("city"), hit.get("postcode"))
-                kaloc = await geo.ka_location(c, *hints)
+                    cc = hit.get("country") or "de"
+                # each portal only knows its own country
+                kaloc = await geo.ka_location(c, *hints) if cc == "de" else None
+                zones = await bienici.zone_ids(c, *hints) if cc == "fr" else []
             except httpx.HTTPError as exc:
                 raise HTTPException(502, f"geocoder: {exc}") from exc
         radius = max(0.0, min(float(b.radius_km or 0), 100.0))
-        spec = {"mode": mode, **area, "radius_km": radius}
+        spec = {"mode": mode, **area, "radius_km": radius, "country": cc}
+        if zones:
+            spec["bienici_zones"] = zones
         # KA searches a circle round its own place; make it big enough to hold the whole
         # area, then match.check trims to the exact shape with real coordinates
         if kaloc:
@@ -242,6 +264,7 @@ def build(guard) -> APIRouter:
             if action == "delete":
                 n = con.execute("DELETE FROM flat_searches WHERE id=?", (sid,)).rowcount
                 con.execute("DELETE FROM flat_matches WHERE search_id=?", (sid,))
+                con.execute("DELETE FROM flat_settings WHERE key=?", (f"profile@{sid}",))
             else:
                 n = con.execute("UPDATE flat_searches SET enabled=? WHERE id=?",
                                 (1 if action == "enable" else 0, sid)).rowcount
@@ -261,19 +284,29 @@ def build(guard) -> APIRouter:
             raise HTTPException(404, "no such match")
         return {"ok": True}
 
+    def _profile_key(sid: int | None) -> str:
+        return f"profile@{sid}" if sid else "profile"
+
+    def profile_for(sid: int | None) -> str:
+        """A search's own text if it has one, else the shared one."""
+        return (sid and fdb.setting(_profile_key(sid)).strip()) or fdb.setting("profile")
+
     @r.get("/profile")
-    def get_profile() -> dict:
-        return {"text": fdb.setting("profile")}
+    def get_profile(search: int | None = None) -> dict:
+        own = fdb.setting(_profile_key(search)) if search else ""
+        return {"text": own or fdb.setting("profile"), "own": bool(own.strip()) if search else None,
+                "shared": fdb.setting("profile")}
 
     @r.post("/profile")
     def set_profile(b: Profile) -> dict:
-        fdb.set_setting("profile", b.text.strip())
+        # an empty text on a search drops its own profile: it falls back to the shared one
+        fdb.set_setting(_profile_key(b.search_id), b.text.strip())
         return {"ok": True}
 
     @r.post("/message")
     async def draft(b: Draft) -> dict:
         """The cached draft if it was written from the current profile, else a new one."""
-        profile = fdb.setting("profile")
+        profile = profile_for(b.search_id)
         if not profile.strip():
             raise HTTPException(400, "Erst ein Profil anlegen: wer ihr seid, Name, Telefon …")
         f = fdb.get(b.source, b.source_id)

@@ -53,6 +53,7 @@ BASE = "https://www.linkedin.com"
 SEARCH_URL = BASE + "/jobs-guest/jobs/api/seeMoreJobPostings/search"
 DETAIL_URL = BASE + "/jobs-guest/jobs/api/jobPosting/{id}"
 GERMANY_GEO = "101282230"
+FRANCE_GEO = "105015875"
 PAGE = 10
 MILES = (0, 5, 10, 25, 50, 100)
 BLOCKED = (429, 999)
@@ -103,11 +104,14 @@ def _miles(km: float | None) -> int | None:
 def _params(kw: str, q: dict) -> dict:
     p: dict = {"keywords": kw, "sortBy": "DD"}
     place = (q.get("place") or "").strip()
-    if place and place.lower() not in ("germany", "deutschland"):
+    if place and place.lower() not in ("germany", "deutschland", "france", "frankreich"):
         p["location"] = place
         d = _miles(q.get("radius_km"))
         if d is not None:
             p["distance"] = d
+    elif q.get("country") == "fr":
+        p["location"] = "France"
+        p["geoId"] = FRANCE_GEO
     else:
         p["location"] = "Germany"
         p["geoId"] = GERMANY_GEO
