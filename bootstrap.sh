@@ -5,7 +5,7 @@ set -e
 DIR=$(dirname "$(readlink -f "$0")")
 CT=${DASH_CT:?DASH_CT not set}
 [ -s "$DIR/token" ] || (umask 077; openssl rand -hex 32 > "$DIR/token")
-pct exec "$CT" -- sh -c 'export DEBIAN_FRONTEND=noninteractive
+pct exec "$CT" -- sh -c 'export DEBIAN_FRONTEND=noninteractive LC_ALL=C
   apt-get update -q && apt-get install -y -q python3 python3-venv ca-certificates >/dev/null
   mkdir -p /opt/deals /var/lib/deals /etc/deals && chmod 700 /etc/deals
   [ -x /opt/deals/venv/bin/pip ] || python3 -m venv /opt/deals/venv
