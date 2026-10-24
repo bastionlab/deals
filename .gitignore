@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 secrets.env
 token
+token.old
