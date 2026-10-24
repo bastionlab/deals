@@ -34,13 +34,14 @@ Stdlib + httpx only.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import unicodedata
 from urllib.parse import urlsplit
 
 import httpx
 
-SEARX = "http://192.168.1.55:8888"
+SEARX = os.environ.get("DEALS_SEARX_URL", "http://192.168.1.55:8888")
 SEARX_TIMEOUT = 15.0
 _searx_gate = asyncio.Semaphore(2)          # LAN box, upstream engines 429 on bursts
 # the instance's default web engines are google cse (quota'd, 429 after ~50 quick

@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 
 import httpx
 
 log = logging.getLogger("ai")
 
-OLLAMA = "http://192.168.1.55:11434"
+OLLAMA = os.environ.get("DEALS_OLLAMA_URL", "http://192.168.1.55:11434")  # deploy.sh sets it from the dashboard config
 MODEL = "qwen3.5:9b"
 BATCH = 6
 TIMEOUT = 180.0
