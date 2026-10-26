@@ -28,7 +28,7 @@ from .sources import kleinanzeigen as ka
 
 TOKEN = os.environ.get("DEALS_API_TOKEN", "")
 ALLOWED = {ip for ip in os.environ.get(
-    "DEALS_API_ALLOW", "192.168.1.54,192.168.1.50,127.0.0.1").split(",") if ip}
+    "DEALS_API_ALLOW", "127.0.0.1").split(",") if ip}
 
 app = FastAPI(title="deals", docs_url=None, redoc_url=None)
 log = logging.getLogger("api")

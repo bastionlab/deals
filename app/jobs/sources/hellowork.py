@@ -1,6 +1,6 @@
 """HelloWork (hellowork.com, ex-RegionsJob): big French general job board, server-rendered HTML.
 
-Verified 2026-10-22 from CT 107 (home IP, desktop Chrome UA, no cookies) — every request 200, no
+Verified 2026-10-22 from the deals container (home IP, desktop Chrome UA, no cookies) — every request 200, no
 captcha / bot wall seen at >= 3 s gaps.
 
 Search  GET /fr-fr/emploi/recherche.html?k=<what>&l=<where>&ray=<km>&st=date&d=w&t=Complet&p=2

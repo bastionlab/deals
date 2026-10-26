@@ -1,6 +1,6 @@
 """LinkedIn public (logged-out) job search. No login, no cookies, ever.
 
-Verified 2026-10-19 from the home IP (pve / CT 107):
+Verified 2026-10-19 from the home IP (the deals container):
   search: GET https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search
           -> 200 + HTML fragment of <li> base-cards, 10 per page (start=0,10,20 ...).
           keywords   free text

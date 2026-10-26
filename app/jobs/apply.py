@@ -11,7 +11,7 @@ Order (first that answers wins):
 Returns {"channel","label","url","email","via","retry"}; retry=True means the search
 leg could not run (SearXNG down / engines suspended) and a later resolve() may do better.
 
-Verified 2026-10-19 from CT 107 against the self-hosted SearXNG (192.168.1.55:8888):
+Verified 2026-10-19 from the deals container against the self-hosted SearXNG (port 8888):
 - /search?q=..&format=json answers in 0.5-1.5 s. Its default web engines are useless
   for this: google cse got "Suspended: too many requests" after ~50 queries in a few
   minutes (SearXNG then parks it for a while), brave 429s, duckduckgo CAPTCHAs.
@@ -41,7 +41,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-SEARX = os.environ.get("DEALS_SEARX_URL", "http://192.168.1.55:8888")
+SEARX = os.environ.get("DEALS_SEARX_URL", "http://127.0.0.1:8888")
 SEARX_TIMEOUT = 15.0
 _searx_gate = asyncio.Semaphore(2)          # LAN box, upstream engines 429 on bursts
 # the instance's default web engines are google cse (quota'd, 429 after ~50 quick

@@ -1,6 +1,6 @@
 """StepStone.de: server-rendered result list + posting pages, embedded JSON only.
 
-Verified 2026-10-19 from CT 107 (home IP, desktop Chrome UA, no cookies) — no
+Verified 2026-10-19 from the deals container (home IP, desktop Chrome UA, no cookies) — no
 DataDome / captcha seen in ~40 requests at >= 6 s gaps; every page answered 200.
 
 Search  GET /jobs/<what>[/in-<where>]?radius=25&orderByField=date&ag=age_7&wfh=1&page=2

@@ -1,6 +1,6 @@
 """France Travail (candidat.francetravail.fr, ex-Pôle emploi): the public employment service's offer search.
 
-Verified 2026-10-22 from CT 107 (home IP, desktop Chrome UA, no cookies) — all 200, no bot wall.
+Verified 2026-10-22 from the deals container (home IP, desktop Chrome UA, no cookies) — all 200, no bot wall.
 
 Search  GET /offres/recherche?motsCles=<what>&lieux=<where>&rayon=<km>&tri=1&emission=7
             &offresPartenaires=true&range=0-49

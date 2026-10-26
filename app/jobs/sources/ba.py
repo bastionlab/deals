@@ -1,6 +1,6 @@
 """Bundesagentur für Arbeit Jobsuche — the biggest German job database (~1 M postings).
 
-Verified 2026-10-19 from the home IP (CT 107), no login, static key header X-API-Key: jobboerse-jobsuche:
+Verified 2026-10-19 from the home IP (the deals container), no login, static key header X-API-Key: jobboerse-jobsuche:
   search  GET rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v6/jobs   (v4 search is 403 now)
           was=<keywords, words ANDed>  wo=<place>  umkreis=<km, any int 0..200, default 25; 0 = the place only>
           page=1..100 (101 -> 400)  size=<any, 100 is fine>  sort=veroeffdatum (newest first; default = relevance)

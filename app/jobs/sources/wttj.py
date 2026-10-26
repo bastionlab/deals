@@ -1,6 +1,6 @@
 """Welcome to the Jungle (welcometothejungle.com): French startup / tech board, searched via its Algolia index.
 
-Verified 2026-10-22 from CT 107 (home IP, no cookies):
+Verified 2026-10-22 from the deals container (home IP, no cookies):
 - The search page is a Next.js app; its runtime config is GET /api/env ("window.env = {...}"):
   PUBLIC_ALGOLIA_APPLICATION_ID=CSEKHVMS53, PUBLIC_ALGOLIA_API_KEY_CLIENT=4bd8f6215d0cc52b26430765769e65a0
   (search-only key, restricted by Referer/Origin -> both set to the site). The jobs index is not in

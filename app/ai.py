@@ -1,4 +1,4 @@
-"""Relevance judging with the local model in CT 105.
+"""Relevance judging with the local model (Ollama on the Local AI container).
 
 Keyword filters cannot express "at least 6 TB", which is how 2 TB drives ended
 up in a search for 6 TB ones. This asks qwen3.5:9b to judge each candidate
@@ -21,7 +21,7 @@ import httpx
 
 log = logging.getLogger("ai")
 
-OLLAMA = os.environ.get("DEALS_OLLAMA_URL", "http://192.168.1.55:11434")  # deploy.sh sets it from the dashboard config
+OLLAMA = os.environ.get("DEALS_OLLAMA_URL", "http://127.0.0.1:11434")  # deploy.sh sets it from the dashboard config
 MODEL = "qwen3.5:9b"
 BATCH = 6
 TIMEOUT = 180.0

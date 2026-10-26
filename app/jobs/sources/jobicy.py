@@ -1,6 +1,6 @@
 """Jobicy: remote-only job board, free public JSON API (no key).
 
-Verified 2026-10-19 from CT 107:
+Verified 2026-10-19 from the deals container:
 - GET https://jobicy.com/api/jobs?count=100&geo=germany&tag=<kw>[&cursor=]  (the docs' canonical
   endpoint; /api/v2/remote-jobs answers identically) -> {"jobs", "nextCursor", "hasMore", ...}
 - `tag` is a server-side keyword search over the job content; geo=germany keeps jobs open to Germany

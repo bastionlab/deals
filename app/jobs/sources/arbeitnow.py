@@ -1,6 +1,6 @@
 """Arbeitnow: German/EU job board with a free public JSON API.
 
-Verified 2026-10-19 from CT 107:
+Verified 2026-10-19 from the deals container:
 - GET https://www.arbeitnow.com/api/job-board-api?page=N -> {"data": [...300 jobs], "links": {"next"}, "meta"}
   newest first by created_at (epoch); one page is ~2 MB and spans ~1.5 days.
 - NO server-side search: search=, q=, remote=, location=, tags= are all ignored (same 300 jobs back).

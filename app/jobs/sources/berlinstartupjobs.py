@@ -1,6 +1,6 @@
 """Berlin Startup Jobs: WordPress job board for Berlin startups, read via RSS.
 
-Verified 2026-10-19 from CT 107:
+Verified 2026-10-19 from the deals container:
 - https://berlinstartupjobs.com/?s=<kw>&feed=rss2[&paged=N] is a working keyword search (WP search,
   all words must match, ordered by relevance not date; orderby= is ignored). 12 items a page,
   a page past the end answers 404. Plain /feed/ and category feeds (/engineering/feed/,

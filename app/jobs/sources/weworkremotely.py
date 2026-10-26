@@ -1,6 +1,6 @@
 """We Work Remotely: remote-only job board, read via RSS.
 
-Verified 2026-10-19 from CT 107:
+Verified 2026-10-19 from the deals container:
 - https://weworkremotely.com/remote-jobs.rss -> ~90 items (~0.8 MB) across all categories, mostly the
   last 4 weeks (a few stale ones from months/years ago). Category feeds exist
   (/categories/remote-back-end-programming-jobs.rss, 5 items) but add nothing the main feed lacks.

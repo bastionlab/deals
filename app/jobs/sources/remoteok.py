@@ -1,6 +1,6 @@
 """Remote OK: remote-only job board, free public JSON API.
 
-Verified 2026-10-19 from CT 107:
+Verified 2026-10-19 from the deals container:
 - GET https://remoteok.com/api -> list; element 0 is {"last_updated", "legal"}, then ~100 newest jobs
   (spanning weeks). No paging. `?tags=python` (or `?tag=`) filters server-side by tag (100 python
   jobs); `?tags=a,b` narrows further. Tags are single words, so free-text keywords are matched

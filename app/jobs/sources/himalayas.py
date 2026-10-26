@@ -1,6 +1,6 @@
 """Himalayas: remote-only job board, free public JSON API (no key needed).
 
-Verified 2026-10-19 from CT 107:
+Verified 2026-10-19 from the deals container:
 - GET https://himalayas.app/jobs/api/search?q=<kw>&country=Germany&sort=recent&page=N
   -> {"comments", "totalCount", "jobs": [...20]}; server-side keyword search.
   country=Germany keeps jobs open to Germany (incl. worldwide ones); sort=recent is newest first

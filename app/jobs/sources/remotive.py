@@ -1,6 +1,6 @@
 """Remotive: remote-only job board, free public JSON API.
 
-Verified 2026-10-19 from CT 107:
+Verified 2026-10-19 from the deals container:
 - GET https://remotive.com/api/remote-jobs -> {"00-warning", "0-legal-notice", "job-count", "jobs": [...]}
 - The free feed is tiny (12 jobs today) and `search=` / `limit=` are effectively ignored: search=python
   and search=shopify both returned the same 12 jobs. So: one GET of the whole feed, filter locally.
