@@ -186,3 +186,8 @@ or `uvicorn app.api:app` from the repo root. Ship with `./deploy.sh`.
 Write intents and prompts from facts, not guesses: a named model also covers its variants (`3090` matches
 `3090 Ti`) unless the intent says otherwise, and a wrong detail in the intent (a "display" on a device that
 has none) makes the model throw out every real match.
+
+## License
+
+[AGPL-3.0](LICENSE), like the Bastion core. Contributions: pull requests here; for the Deals, Flats and Jobs
+add-ons themselves see the [marketplace](https://github.com/bastionlab/addons).
