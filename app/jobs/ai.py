@@ -58,7 +58,7 @@ async def suggest(client: httpx.AsyncClient, wish: str, profile: dict | None) ->
         "messages": [{"role": "system", "content": SUGGEST_SYSTEM},
                      {"role": "user", "content": f"WUNSCH: {wish or '-'}\n\nPROFIL:\n{cv.brief(profile or {})}"}],
     }
-    r = await client.post(f"{OLLAMA}/api/chat", json=body, timeout=TIMEOUT)
+    r = await client.post(f"{OLLAMA}/api/chat", json=body, headers={"X-Job": "jobs"}, timeout=TIMEOUT)
     r.raise_for_status()
     out = json.loads(r.json()["message"]["content"])
     out["keywords"] = tidy_keywords(out.get("keywords") or [])
@@ -164,7 +164,7 @@ async def read(client: httpx.AsyncClient, job: dict, profile: dict, wish: str) -
                      {"role": "user", "content": _prompt(job, profile, wish)}],
     }
     try:
-        r = await client.post(f"{OLLAMA}/api/chat", json=body, timeout=TIMEOUT)
+        r = await client.post(f"{OLLAMA}/api/chat", json=body, headers={"X-Job": "jobs"}, timeout=TIMEOUT)
         r.raise_for_status()
         out = json.loads(r.json()["message"]["content"])
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as exc:

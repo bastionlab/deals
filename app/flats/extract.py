@@ -106,7 +106,7 @@ async def read_ad(client: httpx.AsyncClient, flat: dict) -> dict | None:
                      {"role": "user", "content": _prompt(flat)}],
     }
     try:
-        r = await client.post(f"{OLLAMA}/api/chat", json=body, timeout=TIMEOUT)
+        r = await client.post(f"{OLLAMA}/api/chat", json=body, headers={"X-Job": "flats"}, timeout=TIMEOUT)
         r.raise_for_status()
         out = json.loads(r.json()["message"]["content"])
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as exc:

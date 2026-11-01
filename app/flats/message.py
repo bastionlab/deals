@@ -167,7 +167,7 @@ async def write(client: httpx.AsyncClient, flat: dict, profile: str) -> dict:
         "messages": [{"role": "system", "content": SYSTEM},
                      {"role": "user", "content": _prompt(flat, profile)}],
     }
-    r = await client.post(f"{OLLAMA}/api/chat", json=body, timeout=TIMEOUT)
+    r = await client.post(f"{OLLAMA}/api/chat", json=body, headers={"X-Job": "flats-message"}, timeout=TIMEOUT)
     r.raise_for_status()
     out = json.loads(r.json()["message"]["content"])
     lang = out.get("sprache") if out.get("sprache") in ("en", "fr") else "de"

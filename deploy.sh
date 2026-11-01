@@ -8,6 +8,7 @@ c() { jq -r "($1) // empty" "$CONF"; }
 CT=${DASH_CT:-$(c .cts.deals.id)}
 [ -n "$CT" ] || { echo "no cts.deals in $CONF" >&2; exit 1; }
 AI=$(c .cts.ai.ip)
+OLLAMA_URL=$(c .ollama_proxy); OLLAMA_URL=${OLLAMA_URL:-http://$AI:11434}   # optional logging proxy, else Ollama direct
 
 echo "-> syncing code (CT $CT)"
 tar -C "$DIR" --exclude=__pycache__ -cf - app systemd requirements.txt | pct exec "$CT" -- tar -C /opt/deals -xf -
@@ -17,8 +18,8 @@ echo "-> env"
 # the API answers the dashboard CT and the host only
 pct exec "$CT" -- sh -c "umask 077; f=/etc/deals/deals.env; touch \$f
   for k in DEALS_API_TOKEN DEALS_OLLAMA_URL DEALS_SEARX_URL DEALS_API_ALLOW; do sed -i \"/^\$k=/d\" \$f; done
-  printf 'DEALS_API_TOKEN=%s\nDEALS_OLLAMA_URL=http://%s:11434\nDEALS_SEARX_URL=http://%s:8888\nDEALS_API_ALLOW=%s,%s,127.0.0.1\n' \
-    '$(cat "$DIR/token")' '$AI' '$AI' '$(c .cts.dash.ip)' '$(c .lan.host_ip)' >> \$f"
+  printf 'DEALS_API_TOKEN=%s\nDEALS_OLLAMA_URL=%s\nDEALS_SEARX_URL=http://%s:8888\nDEALS_API_ALLOW=%s,%s,127.0.0.1\n' \
+    '$(cat "$DIR/token")' '$OLLAMA_URL' '$AI' '$(c .cts.dash.ip)' '$(c .lan.host_ip)' >> \$f"
 
 echo "-> units"
 pct exec "$CT" -- sh -c 'install -m644 /opt/deals/systemd/deals-*.service /etc/systemd/system/ \

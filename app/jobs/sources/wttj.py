@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 import unicodedata
@@ -41,8 +42,9 @@ INTERVAL = 6.0
 COUNTRY = "fr"              # the poller only asks this portal for searches located in France
 
 BASE = "https://www.welcometothejungle.com"
-APP_ID = "CSEKHVMS53"
-API_KEY = "4bd8f6215d0cc52b26430765769e65a0"
+# the public search-only key WTTJ ships in its own web app; override if they rotate it
+APP_ID = os.environ.get("WTTJ_ALGOLIA_APP_ID", "CSEKHVMS53")
+API_KEY = os.environ.get("WTTJ_ALGOLIA_KEY", "4bd8f6215d0cc52b26430765769e65a0")
 INDEX = "wttj_jobs_production_fr_published_at_desc"
 PER_PAGE = 30
 GEO_API = "https://geo.api.gouv.fr/communes"

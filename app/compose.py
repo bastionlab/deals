@@ -167,7 +167,7 @@ def to_spec(form: dict) -> dict:
 
 
 async def _chat(client: httpx.AsyncClient, system: str, user: str, schema: dict) -> dict:
-    r = await client.post(f"{ai.OLLAMA}/api/chat", timeout=ai.TIMEOUT, json={
+    r = await client.post(f"{ai.OLLAMA}/api/chat", timeout=ai.TIMEOUT, headers={"X-Job": "deals-message"}, json={
         "model": ai.MODEL, "stream": False, "think": False, "format": schema,
         "options": {"temperature": 0.2},
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],

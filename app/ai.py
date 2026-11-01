@@ -147,7 +147,7 @@ async def _one_batch(client: httpx.AsyncClient, intent: str, batch: list[dict]) 
             {"role": "user", "content": _prompt(intent, batch)},
         ],
     }
-    r = await client.post(f"{OLLAMA}/api/chat", json=body, timeout=TIMEOUT)
+    r = await client.post(f"{OLLAMA}/api/chat", json=body, headers={"X-Job": "deals"}, timeout=TIMEOUT)
     r.raise_for_status()
     verdicts = json.loads(r.json()["message"]["content"]).get("verdicts") or []
     if len(verdicts) != len(batch):

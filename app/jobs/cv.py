@@ -77,7 +77,7 @@ async def profile(client: httpx.AsyncClient, text: str) -> dict:
         "messages": [{"role": "system", "content": SYSTEM},
                      {"role": "user", "content": text[:MAX_TEXT]}],
     }
-    r = await client.post(f"{OLLAMA}/api/chat", json=body, timeout=TIMEOUT)
+    r = await client.post(f"{OLLAMA}/api/chat", json=body, headers={"X-Job": "jobs-cv"}, timeout=TIMEOUT)
     r.raise_for_status()
     out = json.loads(r.json()["message"]["content"])
     for k in ("roles", "skills", "languages"):
